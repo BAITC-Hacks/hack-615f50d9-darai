@@ -40,6 +40,7 @@ from .live_ai_types import (
     PreviewWord,
 )
 from .ml import ModelUnavailable, compute_lock, get_registry
+from .voice import energy_speech_regions
 
 log = logging.getLogger("darai.live")
 
@@ -67,7 +68,9 @@ class LiveConfig:
         self.no_speech_prob = _env_float("LIVE_PREVIEW_NO_SPEECH_PROB", 0.6)
         self.hallucination_silence = _env_float("LIVE_PREVIEW_HALLUCINATION_SILENCE_SECONDS", 1.0) or None
         self.beam_size = int(_env_float("LIVE_PREVIEW_BEAM_SIZE", 0)) or None   # default: ASR_BEAM_SIZE
-        self.refine = env_bool("LIVE_PREVIEW_REFINE_LANGUAGES", env_bool("ASR_REFINE_LANGUAGES", True))
+        # Per-segment language refinement: measured lag up to 87 s on CPU M4 Pro -> off for preview;
+        # the final pipeline keeps ASR_REFINE_LANGUAGES.
+        self.refine = env_bool("LIVE_PREVIEW_REFINE_LANGUAGES", False)
 
 
 # ------------------------------------------------------------------ decoding
@@ -186,7 +189,8 @@ def snapshot(state: LivePreviewState) -> list[LivePreviewUtterance]:
 
 
 def merge_window(state: LivePreviewState, window_words: list[PreviewWord], window_end: float,
-                 live_edge: bool, cfg: LiveConfig) -> LivePreviewState:
+                 live_edge: bool, cfg: LiveConfig,
+                 voiced: list[tuple[float, float]] | None = None) -> LivePreviewState:
     """Pure state transition for one transcribed window (absolute timestamps)."""
     recent = [w.text for w in state.open_words[-3:]]
     if len(recent) < 3 and state.final:
@@ -201,7 +205,16 @@ def merge_window(state: LivePreviewState, window_words: list[PreviewWord], windo
     if commit:
         committed_until = max(committed_until, commit[-1].end)
     if not rest:
-        committed_until = max(committed_until, commit_limit - cfg.overlap)
+        skip_to = commit_limit - cfg.overlap
+        if voiced is not None:
+            # Only a real pause may be skipped: voiced audio the model returned no words
+            # for (edge of window, hard Kazakh phrase) stays uncommitted for the next window.
+            after = committed_until
+            for v0, v1 in voiced:
+                if v1 > after + 0.3:
+                    skip_to = min(skip_to, max(v0, after))
+                    break
+        committed_until = max(committed_until, skip_to)
     if not live_edge and committed_until <= state.committed_until + 0.1:
         # A word straddling the limit of a backlog window must not stall progress forever.
         commit, rest = fresh, []
@@ -215,6 +228,19 @@ def merge_window(state: LivePreviewState, window_words: list[PreviewWord], windo
 
 
 # ------------------------------------------------------------------ entry point
+
+
+def quiet_point(samples: np.ndarray, around: float, radius: float = 0.75) -> float:
+    """Lowest-energy 20 ms frame near ``around``: windows start in a pause, not inside a word
+    (a window cut mid-word made Whisper emit a caption hallucination for the whole window)."""
+    sr = audio.SAMPLE_RATE
+    lo, hi = max(0, int((around - radius) * sr)), min(samples.size, int((around + radius) * sr))
+    frame = int(0.02 * sr)
+    if hi - lo < frame * 2:
+        return max(0.0, around)
+    seg = samples[lo:lo + (hi - lo) // frame * frame].reshape(-1, frame)
+    rms = np.sqrt(np.mean(seg.astype(np.float64) ** 2, axis=1))
+    return (lo + int(np.argmin(rms)) * frame) / sr
 
 
 def _words_of(res, offset: float, max_no_speech: float) -> list[PreviewWord]:
@@ -287,7 +313,8 @@ def _run(req: LivePreviewRequest, state: LivePreviewState, prev, keep, registry)
 
     asr_time = 0.0
     for _ in range(max(1, cfg.max_windows)):
-        start = max(0.0, state.committed_until - cfg.overlap)
+        start = 0.0 if state.committed_until <= 0 else quiet_point(samples, state.committed_until - cfg.overlap)
+        start = min(start, state.committed_until)  # never skip uncommitted audio
         end = min(total, start + cfg.window)
         if end - start < 0.5:
             break
@@ -295,7 +322,9 @@ def _run(req: LivePreviewRequest, state: LivePreviewState, prev, keep, registry)
         clip = samples[int(start * audio.SAMPLE_RATE):int(end * audio.SAMPLE_RATE)]
         check()
         t0 = time.perf_counter()
-        res = transcribe(model, clip, language=s.asr_language, beam_size=cfg.beam_size or s.asr_beam_size,
+        language = req.asr_language if req.asr_language is not None else s.asr_language
+        res = transcribe(model, clip, language=None if language == "auto" else language,
+                         profile=req.asr_profile or s.asr_profile, beam_size=cfg.beam_size or s.asr_beam_size,
                          multilingual=env_bool("ASR_MULTILINGUAL", True),
                          vad_filter=env_bool("ASR_VAD_FILTER", True), is_cancelled=cancelled,
                          allowed_languages=_allowed() if cfg.refine else None,
@@ -304,7 +333,8 @@ def _run(req: LivePreviewRequest, state: LivePreviewState, prev, keep, registry)
         dt = time.perf_counter() - t0
         asr_time += dt
         check()
-        state = merge_window(state, _words_of(res, start, cfg.no_speech_prob), end, live_edge, cfg)
+        voiced = [(start + a, start + b) for a, b in energy_speech_regions(clip, audio.SAMPLE_RATE)]
+        state = merge_window(state, _words_of(res, start, cfg.no_speech_prob), end, live_edge, cfg, voiced)
         processed = end
         log.info("preview window %.1f-%.1fs: asr %.2fs (x%.2f)", start, end, dt, dt / max(end - start, 1e-6))
         if live_edge:

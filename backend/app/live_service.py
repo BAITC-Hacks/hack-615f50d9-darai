@@ -193,7 +193,8 @@ def finish(db: Session, meeting: Meeting, s: LiveSession, last_sequence: int, ba
         rec = _store_recording(db, meeting, upload, background)  # commits (incl. state) and queues the job
     s.recording_id = rec.id
     db.commit()
-    src.unlink(missing_ok=True)  # the container now lives in the recording directory
+    _last_results.pop(s.id, None)
+    shutil.rmtree(src.parent, ignore_errors=True)  # the container now lives in the recording directory
     return {"session_id": str(s.id), "state": "finalizing", "recording_id": str(rec.id)}
 
 
@@ -236,8 +237,8 @@ def expire_idle(db: Session, now: datetime | None = None) -> int:
 _running: set[uuid.UUID] = set()
 _running_lock = threading.Lock()
 _preview_sem = threading.BoundedSemaphore(1)  # one preview at a time across sessions
-# Last full AI result per session (carries the AI's incremental state). Lost on restart:
-# then `previous` is rebuilt from stored utterances and the AI re-decodes as needed.
+# Last full AI result per session (carries the AI's incremental state); also persisted as
+# preview_state (result.to_dict()) so a restart does not force a from-scratch preview.
 _last_results: dict[uuid.UUID, Any] = {}
 
 
@@ -287,6 +288,9 @@ def _preview_loop(session_id: uuid.UUID, jobs) -> None:
                 return
             src, mime, prev_utts, prev_until = Path(s.local_path), s.mime_type, s.preview_utterances, \
                 s.processed_until_seconds
+            prev_state = s.preview_state
+            meeting = db.get(Meeting, s.meeting_id)
+            asr_language, asr_profile = meeting.asr_language, meeting.asr_profile
         try:
             mod, T = _live_ai()
         except ai_gateway.AIUnavailable as exc:
@@ -295,13 +299,18 @@ def _preview_loop(session_id: uuid.UUID, jobs) -> None:
             return
         work = src.parent / "preview"
         work.mkdir(exist_ok=True)
-        snap = work / f"snapshot{src.suffix}"
+        snap = src.parent / f"snap-{stable}{src.suffix}"
         try:
             with open(src, "rb") as fi, open(snap, "wb") as fo:
                 fo.write(fi.read(stable))
         except OSError:
             return  # cancelled and removed meanwhile
         previous = _last_results.get(session_id)
+        if previous is None and prev_state and hasattr(T.LivePreviewResult, "from_dict"):
+            try:
+                previous = T.LivePreviewResult.from_dict(prev_state)
+            except Exception:
+                previous = None  # losing previous only means a from-scratch preview
         if previous is None and prev_utts:
             previous = T.LivePreviewResult(processed_until_seconds=prev_until,
                                            utterances=[T.LivePreviewUtterance(**u) for u in prev_utts])
@@ -313,10 +322,12 @@ def _preview_loop(session_id: uuid.UUID, jobs) -> None:
                 return cur is None or cur.state != "recording" or bool(jobs.running)
 
         req = T.LivePreviewRequest(container_path=snap, mime_type=mime, stable_bytes=stable, work_dir=work,
-                                   previous=previous, is_cancelled=cancelled)
+                                   previous=previous, is_cancelled=cancelled,
+                                   asr_language=asr_language, asr_profile=asr_profile)
         try:
             result = mod.transcribe_preview(req)
         except Exception as exc:
+            snap.unlink(missing_ok=True)
             code = getattr(exc, "code", None) or "PREVIEW_FAILED"
             if code == "CANCELLED":
                 _set_preview(session_id, preview_status="waiting")
@@ -325,7 +336,9 @@ def _preview_loop(session_id: uuid.UUID, jobs) -> None:
             _set_preview(session_id, preview_status="unavailable", preview_bytes=stable,
                          preview_error={"code": code, "message": getattr(exc, "message", code)})
             return
+        snap.unlink(missing_ok=True)
         _last_results[session_id] = result
+        state_dict = result.to_dict() if hasattr(result, "to_dict") else None
         status = getattr(result, "preview_status", "ready") or "ready"
         perr = getattr(result, "preview_error", None)
         utts = [{"id": u.id, "start": float(u.start), "end": float(u.end), "speaker_label": u.speaker_label,
@@ -335,6 +348,7 @@ def _preview_loop(session_id: uuid.UUID, jobs) -> None:
             if s is None or s.state not in ("recording", "finalizing"):
                 return
             s.preview_utterances = utts
+            s.preview_state = state_dict
             s.processed_until_seconds = float(result.processed_until_seconds)
             s.preview_bytes = stable
             s.revision += 1

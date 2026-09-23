@@ -2287,6 +2287,58 @@
           }
         }
       }
+    },
+    "/meetings/{meeting_id}/speech-settings": {
+      "patch": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Update Speech Settings",
+        "operationId": "update_speech_settings_meetings__meeting_id__speech_settings_patch",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3098,6 +3150,25 @@
             "type": "boolean",
             "title": "Can Edit"
           },
+          "asr_language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "ru",
+              "kk"
+            ],
+            "title": "Asr Language",
+            "default": "auto"
+          },
+          "asr_profile": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "refined"
+            ],
+            "title": "Asr Profile",
+            "default": "refined"
+          },
           "meeting_url": {
             "anyOf": [
               {
@@ -3275,6 +3346,25 @@
           "can_edit": {
             "type": "boolean",
             "title": "Can Edit"
+          },
+          "asr_language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "ru",
+              "kk"
+            ],
+            "title": "Asr Language",
+            "default": "auto"
+          },
+          "asr_profile": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "refined"
+            ],
+            "title": "Asr Profile",
+            "default": "refined"
           },
           "meeting_url": {
             "anyOf": [
@@ -4004,6 +4094,34 @@
           "draft_revision"
         ],
         "title": "SpeakersOut"
+      },
+      "SpeechSettings": {
+        "properties": {
+          "asr_language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "ru",
+              "kk"
+            ],
+            "title": "Asr Language"
+          },
+          "asr_profile": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "refined"
+            ],
+            "title": "Asr Profile"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "asr_language",
+          "asr_profile"
+        ],
+        "title": "SpeechSettings"
       },
       "SummaryOut": {
         "properties": {

@@ -225,7 +225,9 @@ class AIPipeline:
             refine = env_bool("ASR_REFINE_LANGUAGES", True)
             allowed = [x.strip() for x in (os.environ.get("ASR_ALLOWED_LANGUAGES") or "ru,kk,en").split(",")
                        if x.strip()]
-            return transcribe(model, samples, language=s.asr_language, beam_size=s.asr_beam_size,
+            language = req.meeting.asr_language if req.meeting.asr_language is not None else s.asr_language
+            return transcribe(model, samples, language=None if language == "auto" else language,
+                              profile=req.meeting.asr_profile or s.asr_profile, beam_size=s.asr_beam_size,
                               multilingual=env_bool("ASR_MULTILINGUAL", True),
                               vad_filter=env_bool("ASR_VAD_FILTER", True), is_cancelled=req.is_cancelled,
                               allowed_languages=allowed if refine else None,

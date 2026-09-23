@@ -27,6 +27,15 @@ const post = (body?: unknown): RequestInit => ({
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 export const liveApi = {
+  speechSettings: (
+    id: string,
+    asr_language: "auto" | "ru" | "kk",
+    asr_profile: "standard" | "refined",
+  ) =>
+    request(`/meetings/${encodeURIComponent(id)}/speech-settings`, {
+      method: "PATCH",
+      body: JSON.stringify({ asr_language, asr_profile }),
+    }),
   start: (
     id: string,
     source: "microphone" | "display",

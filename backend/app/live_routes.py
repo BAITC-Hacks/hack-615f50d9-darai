@@ -177,3 +177,27 @@ def patch_link(meeting_id: str, body: LinkIn, current: CurrentUser = Depends(get
     meeting.meeting_url = body.meeting_url
     db.commit()
     return LinkOut(meeting_url=meeting.meeting_url)
+
+
+class SpeechSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    asr_language: Literal["auto", "ru", "kk"]
+    asr_profile: Literal["standard", "refined"]
+
+
+@router.patch("/{meeting_id}/speech-settings", response_model=SpeechSettings)
+def update_speech_settings(meeting_id: str, body: SpeechSettings,
+                           current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    from sqlalchemy import select
+    from .models import LiveSession
+    from .errors import conflict
+
+    meeting = get_meeting_for_edit(db, meeting_id, current, lock=True)
+    if (meeting.recording and meeting.recording.processing_status == "processing") or db.scalar(
+        select(LiveSession.id).where(LiveSession.meeting_id == meeting.id, LiveSession.state == "recording")
+    ):
+        raise conflict("RECORDING_PROCESSING", "Дождитесь завершения записи и обработки")
+    meeting.asr_language = body.asr_language
+    meeting.asr_profile = body.asr_profile
+    db.commit()
+    return body

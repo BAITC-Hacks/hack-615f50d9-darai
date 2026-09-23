@@ -109,7 +109,7 @@ test("последовательные бинарные части, финаль
   });
   await page.getByRole("button", { name: "Завершить запись" }).click();
   await expect(
-    page.getByText("Запись сохранена и обработана", { exact: false }),
+    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", { exact: true }),
   ).toBeVisible({ timeout: 12000 });
   expect(
     Buffer.concat(state.liveChunks.map((c) => c.bytes)).toString(),
@@ -151,7 +151,7 @@ test("сбой сети сохраняет байты для retry; preview erro
   ).toBeVisible();
   await page.getByRole("button", { name: "Повторить отправку" }).click();
   await expect(
-    page.getByText("Запись сохранена и обработана", { exact: false }),
+    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", { exact: true }),
   ).toBeVisible({ timeout: 12000 });
   expect(
     Buffer.concat(state.liveChunks.map((c) => c.bytes)).toString(),
@@ -220,7 +220,7 @@ test("настоящий MediaRecorder на искусственном ауди�
     track.dispatchEvent(new Event("ended"));
   });
   await expect(
-    page.getByText("Запись сохранена и обработана", { exact: false }),
+    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", { exact: true }),
   ).toBeVisible({ timeout: 15000 });
   expect(state.liveChunks.length).toBeGreaterThan(0);
 });
@@ -243,4 +243,18 @@ test("выход со страницы освобождает потоки и к
       ),
     ),
   ).toBeTruthy();
+});
+
+test("язык и профиль сохраняются до начала записи", async ({ page }) => {
+  const state = await setup(page);
+  await page.getByLabel("Язык совещания", { exact: true }).selectOption("kk");
+  await page.getByLabel("Режим распознавания", { exact: true }).selectOption("refined");
+  await expect(page.getByRole("button", { name: "Подготовить источник" })).toBeDisabled();
+  await page.getByRole("button", { name: "Сохранить настройки распознавания" }).click();
+  await expect(page.getByRole("button", { name: "Подготовить источник" })).toBeEnabled();
+  expect(state.meetings[0].asr_language).toBe("kk");
+  expect(state.meetings[0].asr_profile).toBe("refined");
+  await page.reload();
+  await expect(page.getByLabel("Язык совещания", { exact: true })).toHaveValue("kk");
+  await page.screenshot({ path: "test-results/speech-settings.png", fullPage: true });
 });

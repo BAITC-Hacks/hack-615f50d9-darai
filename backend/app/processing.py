@@ -108,7 +108,8 @@ def _meeting_context(db: Session, meeting: Meeting):
     local = meeting.starts_at.astimezone(ZoneInfo(meeting.timezone))
     participants = [T.Participant(employee_id=p.employee.id, fio=p.employee.fio, position=p.employee.position)
                     for p in sorted(meeting.participants, key=lambda p: p.employee.fio)]
-    return T.MeetingContext(starts_at_local=local, timezone=meeting.timezone, participants=participants)
+    return T.MeetingContext(starts_at_local=local, timezone=meeting.timezone, participants=participants,
+                            asr_language=meeting.asr_language, asr_profile=meeting.asr_profile)
 
 
 def _candidates(db: Session, meeting: Meeting):

@@ -53,6 +53,8 @@ class MeetingContext:
     starts_at_local: datetime        # aware datetime in the meeting's timezone
     timezone: str                    # IANA name, e.g. "Asia/Almaty"
     participants: list[Participant]
+    asr_language: str | None = None  # auto/ru/kk; None preserves env for CLI callers
+    asr_profile: str | None = None
 
 
 def _never_cancelled() -> bool:

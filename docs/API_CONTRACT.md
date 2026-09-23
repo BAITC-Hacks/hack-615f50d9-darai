@@ -711,3 +711,15 @@ Notification:
 | 1.2.0 | 2026-09-23 | `DELETE /employees/{id}` (архивирование), `can_delete` в Employee, коды `SELF_DELETE_FORBIDDEN`, `LAST_ADMIN`, `EMPLOYEE_ARCHIVED` | Добавочно |
 | 1.1.0 | 2026-09-23 | Учётные записи: `must_change_password`, `POST /auth/change-password`, `POST /users/{id}/reset-password`, временный пароль генерирует backend (`password` убран из `POST/PATCH /users`), `403 PASSWORD_CHANGE_REQUIRED`, `GET /employees/me`, `me` в `/employees/{id}/voice`, `Cache-Control: no-store` | `/users` frontend не использует; новые поля пользователя — добавочные; frontend должен обработать `must_change_password` и `PASSWORD_CHANGE_REQUIRED` |
 | 1.0.1 | 2026-09-23 | Добавлены значения `Speaker.review_reasons: split_cluster_suspected` и `Task.review_reasons: deadline_before_meeting` (их выдаёт AI-пайплайн, см. `docs/AI_CONTRACT.md`) | Обратно совместимо: поля — массивы строк, форма ответов не изменилась |
+
+## Настройки распознавания речи
+
+Объект встречи включает `asr_language: auto|ru|kk` и `asr_profile: standard|refined`.
+Начальные значения: `auto`, `refined` (сохраняем качество на тестовой RU/KZ-записи).
+
+`PATCH /meetings/{id}/speech-settings` принимает оба поля и возвращает их (200).
+Только редактор черновика, с cookie и CSRF. Во время live-записи или обработки —
+409 `RECORDING_PROCESSING`. Некорректный язык/профиль — 422.
+Настройки действуют на следующую обработку файла и live-preview; существующий
+транскрипт автоматически не переписывается. `auto` явно отменяет принудительный
+язык из env для этой встречи. CLI без настроек встречи использует env.

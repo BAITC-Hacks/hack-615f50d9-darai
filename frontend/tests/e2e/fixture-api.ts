@@ -465,6 +465,10 @@ export async function fixtureApi(
     if (m) {
       const suffix = path.slice(`/meetings/${m.id}`.length);
       if (!suffix) return ok(m);
+      if (suffix === "/speech-settings" && method === "PATCH") {
+        Object.assign(m, body);
+        return ok({ asr_language: m.asr_language, asr_profile: m.asr_profile });
+      }
       if (suffix === "/link") {
         m.meeting_url = body.meeting_url;
         return ok({ meeting_url: m.meeting_url });

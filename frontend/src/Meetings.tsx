@@ -971,6 +971,15 @@ function RecordingPanel({
   const [inputMode, setInputMode] = useState("upload");
   const [capturing, setCapturing] = useState(false);
   const [meetingUrl, setMeetingUrl] = useState(m.meeting_url || "");
+  const [speechLanguage, setSpeechLanguage] = useState(
+    m.asr_language || "auto",
+  );
+  const [speechProfile, setSpeechProfile] = useState(
+    m.asr_profile || "refined",
+  );
+  const speechDirty =
+    speechLanguage !== (m.asr_language || "auto") ||
+    speechProfile !== (m.asr_profile || "refined");
   const [replaceLive, setReplaceLive] = useState(false);
   const [replace, setReplace] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -978,6 +987,8 @@ function RecordingPanel({
   const [pollAttempt, setPollAttempt] = useState(0);
   const [live, setLive] = useState(m.recording);
   const action = useAction();
+  const speechBusy =
+    capturing || action.busy || live?.processing_status === "processing";
   const controller = useRef<AbortController | null>(null);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
@@ -1112,6 +1123,62 @@ function RecordingPanel({
               </a>
             )}
           </div>
+          <fieldset disabled={speechBusy}>
+            <legend>Распознавание речи</legend>
+            <Field label="Язык совещания">
+              <select
+                value={speechLanguage}
+                onChange={(e) =>
+                  setSpeechLanguage(e.target.value as typeof speechLanguage)
+                }
+              >
+                <option value="auto">Авто — в том числе смешанная речь</option>
+                <option value="ru">Русский</option>
+                <option value="kk">Қазақша</option>
+              </select>
+            </Field>
+            <Field label="Режим распознавания">
+              <select
+                value={speechProfile}
+                onChange={(e) =>
+                  setSpeechProfile(e.target.value as typeof speechProfile)
+                }
+              >
+                <option value="standard">Стандартный</option>
+                <option value="refined">Дополнительная проверка языка</option>
+              </select>
+            </Field>
+            <p>
+              Для одноязычной встречи выберите язык явно. Дополнительная
+              проверка может помочь при смене языков, но замедляет итоговую
+              обработку. Предварительный текст может измениться.
+            </p>
+            <button
+              className="secondary"
+              disabled={!speechDirty}
+              onClick={() =>
+                void action.run(async () => {
+                  await liveApi.speechSettings(
+                    m.id,
+                    speechLanguage,
+                    speechProfile,
+                  );
+                  await refresh();
+                }, "Настройки распознавания сохранены")
+              }
+            >
+              Сохранить настройки распознавания
+            </button>
+            {speechDirty && (
+              <Notice kind="warning">
+                Сохраните настройки перед записью или загрузкой файла.
+              </Notice>
+            )}
+            <p>
+              Изменения применяются к следующей обработке. Уже готовый
+              транскрипт не изменяется.
+            </p>
+          </fieldset>
           <div className="form-actions" aria-label="Способ добавления записи">
             <button
               className="secondary"
@@ -1147,6 +1214,7 @@ function RecordingPanel({
                 id={m.id}
                 disabled={
                   dirty ||
+                  speechDirty ||
                   live?.processing_status === "processing" ||
                   (!!live && !replaceLive)
                 }
@@ -1212,7 +1280,11 @@ function RecordingPanel({
                 )}
                 <button
                   disabled={
-                    !file || action.busy || dirty || (!!live && !replace)
+                    !file ||
+                    action.busy ||
+                    dirty ||
+                    speechDirty ||
+                    (!!live && !replace)
                   }
                   onClick={() =>
                     void action.run(async () => {

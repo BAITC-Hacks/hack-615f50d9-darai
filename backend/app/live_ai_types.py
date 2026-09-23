@@ -86,3 +86,5 @@ class LivePreviewRequest:
     work_dir: Path           # AI temp files; backend removes it with the session
     previous: LivePreviewResult | None = None
     is_cancelled: Callable[[], bool] = _never_cancelled
+    asr_language: str | None = None
+    asr_profile: str | None = None

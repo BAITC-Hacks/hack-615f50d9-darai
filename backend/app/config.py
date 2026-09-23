@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
     asr_model_id: str = "faster-whisper-large-v3"
     asr_device: str = "auto"  # auto | cpu | cuda
     asr_compute_type: str = "default"  # int8 | float16 | int8_float16 | default
+    asr_profile: Literal["standard", "refined"] = "refined"
     asr_language: str | None = None  # None/empty => autodetect
     asr_beam_size: int = Field(5, ge=1, le=10)
     asr_cpu_threads: int = Field(0, ge=0)

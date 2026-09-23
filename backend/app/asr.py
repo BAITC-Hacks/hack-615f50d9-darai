@@ -72,8 +72,11 @@ def transcribe(model, samples: np.ndarray, *, language: str | None = None, beam_
                multilingual: bool = True, vad_filter: bool = True,
                is_cancelled=None, allowed_languages: list[str] | None = None,
                min_language_prob: float = 0.5,
-               hallucination_silence_threshold: float | None = None) -> AsrResult:
+               hallucination_silence_threshold: float | None = None,
+               profile: str = "refined") -> AsrResult:
     """``samples``: float32 mono 16 kHz. Blocking; call outside the event loop."""
+    if profile not in ("standard", "refined"):
+        raise ValueError("Unknown ASR profile")
     extra = {}
     if hallucination_silence_threshold:
         extra["hallucination_silence_threshold"] = hallucination_silence_threshold
@@ -81,11 +84,11 @@ def transcribe(model, samples: np.ndarray, *, language: str | None = None, beam_
         samples,
         task="transcribe",
         language=language,
-        multilingual=multilingual and language is None,
+        multilingual=profile == "refined" and multilingual and language is None,
         beam_size=beam_size,
         word_timestamps=True,
         vad_filter=vad_filter,
-        condition_on_previous_text=False,  # limits hallucination loops on long files
+        condition_on_previous_text=profile == "standard",  # standard = adilet whole-file decoding
         **extra,
     )
     segments: list[AsrSegment] = []
@@ -100,7 +103,7 @@ def transcribe(model, samples: np.ndarray, *, language: str | None = None, beam_
                                    getattr(seg, "no_speech_prob", None)))
     result = AsrResult(segments=segments, language=file_lang,
                        language_probability=getattr(info, "language_probability", None))
-    if multilingual and language is None and allowed_languages:
+    if profile == "refined" and multilingual and language is None and allowed_languages:
         refine_languages(model, samples, result, allowed_languages, beam_size=beam_size,
                          min_prob=min_language_prob, is_cancelled=is_cancelled)
     return result

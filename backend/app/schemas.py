@@ -313,6 +313,8 @@ class MeetingListItemOut(BaseModel):
     participant_count: int
     recording: RecordingOut | None
     can_edit: bool
+    asr_language: Literal["auto", "ru", "kk"] = "auto"
+    asr_profile: Literal["standard", "refined"] = "refined"
     meeting_url: str | None = None
 
 

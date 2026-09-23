@@ -42,6 +42,8 @@ class LivePreviewRequest:
     work_dir: Path
     previous: object
     is_cancelled: Callable
+    asr_language: str | None = None
+    asr_profile: str | None = None
 
 
 class FakeLiveAI:

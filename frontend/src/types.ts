@@ -129,6 +129,8 @@ export interface Task {
 }
 export interface MeetingListItem {
   meeting_url?: string | null;
+  asr_language?: "auto" | "ru" | "kk";
+  asr_profile?: "standard" | "refined";
   id: ID;
   title: string;
   starts_at: string;

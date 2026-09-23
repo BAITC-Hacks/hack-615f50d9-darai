@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.Column('preview_error', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column('preview_utterances', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column('preview_bytes', sa.Integer(), nullable=False),
+        sa.Column('preview_state', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column('processed_until_seconds', sa.Float(), nullable=False),
         sa.Column('revision', sa.Integer(), nullable=False),
         sa.Column('recording_id', sa.UUID(), nullable=True),

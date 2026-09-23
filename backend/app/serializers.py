@@ -184,6 +184,7 @@ def meeting_list_item(db: Session, meeting: Meeting, current: CurrentUser) -> Me
         recording=recording_out(meeting.recording) if meeting.recording else None,
         can_edit=is_editor(meeting, current) and meeting.approval_status == "draft",
         meeting_url=meeting.meeting_url,
+        asr_language=meeting.asr_language, asr_profile=meeting.asr_profile,
     )
 
 
