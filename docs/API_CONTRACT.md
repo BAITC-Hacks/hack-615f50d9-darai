@@ -1,6 +1,6 @@
 # DARAI — контракт HTTP API (backend ↔ frontend)
 
-Версия контракта: **1.0.1** (зафиксирована 2026-09-23; 1.0.1 — только дополнительные значения перечислений, см. «Журнал изменений»). Изменения — только по согласованию backend- и frontend-агентов, с обновлением этого файла и `backend/openapi.json`.
+Версия контракта: **1.1.0** (зафиксирована 2026-09-23; 1.0.1 — только дополнительные значения перечислений, см. «Журнал изменений»). Изменения — только по согласованию backend- и frontend-агентов, с обновлением этого файла и `backend/openapi.json`.
 
 Источник требований: `docs/DEVELOPMENT_PLAN.md` §4. Машиночитаемая схема после реализации — `backend/openapi.json` (экспорт FastAPI). При расхождении этот документ описывает намерение, OpenAPI — фактические типы; расхождение считается ошибкой и исправляется.
 
@@ -69,6 +69,9 @@
 | 401 | `INVALID_CREDENTIALS` | Неверный логин/пароль или неактивная учётная запись |
 | 403 | `CSRF_FAILED` | Нет/неверный `X-CSRF-Token` |
 | 403 | `FORBIDDEN` | Сущность видна, но действие запрещено ролью |
+| 403 | `PASSWORD_CHANGE_REQUIRED` | У учётной записи `must_change_password = true`; разрешены только `GET /auth/me`, `POST /auth/change-password`, `POST /auth/logout` |
+| 422 | `INVALID_CURRENT_PASSWORD` | Неверный текущий пароль при смене |
+| 422 | `WEAK_PASSWORD` | Новый пароль короче 10 символов, совпадает с текущим или с логином |
 | 404 | `NOT_FOUND` | Нет сущности или нет доступа к ней |
 | 409 | `CONFLICT` и специфичные коды ниже | Конфликт состояния |
 | 413 | `FILE_TOO_LARGE` | Файл больше `MAX_UPLOAD_MB` |
@@ -140,6 +143,30 @@
 
 `employee` может быть `null` только у технического администратора.
 
+Во всех объектах пользователя (`user` в ответе входа, `GET /auth/me`) есть поле `"must_change_password": true|false`.
+
+### Обязательная смена временного пароля
+
+Если `must_change_password = true` (аккаунт только что выдан или пароль сброшен администратором), backend для **любого** другого маршрута отвечает `403 PASSWORD_CHANGE_REQUIRED`. Разрешены только `GET /auth/me`, `POST /auth/change-password`, `POST /auth/logout`. Вход (`POST /auth/login`) с временным паролем успешен и возвращает `must_change_password: true` — frontend сразу показывает форму смены пароля.
+
+### `POST /auth/change-password`
+
+Только для текущего пользователя (чужой `id` передать нельзя). Требует `X-CSRF-Token`.
+
+```json
+{"current_password": "временный-или-текущий", "new_password": "не короче 10 символов"}
+```
+
+`200` — тот же формат, что `POST /auth/login` (`{"user": {..., "must_change_password": false}, "csrf_token": "..."}`).
+
+Поведение сессий: **все** сессии пользователя, включая текущую, отзываются; в этом же ответе выдаётся новая сессия (новые cookie `darai_session`/`darai_csrf`) и новый `csrf_token`, который frontend обязан сохранить. Другие устройства получат `401`.
+
+Ошибки: `422 INVALID_CURRENT_PASSWORD`, `422 WEAK_PASSWORD` (короче 10 символов, равен текущему или логину), `422 VALIDATION_ERROR`.
+
+### Кеширование
+
+Все ответы backend содержат `Cache-Control: no-store` (в т.ч. с временным паролем и CSRF-токеном).
+
 ---
 
 ## 2. Учётные записи (только admin)
@@ -152,6 +179,7 @@ User:
   "login": "d.akhmetova",
   "role": "employee",
   "active": true,
+  "must_change_password": true,
   "employee_id": "5c1e...",
   "employee_fio": "Ахметова Дана Ерлановна",
   "created_at": "2026-09-23T08:00:00Z"
@@ -161,10 +189,20 @@ User:
 | Метод и путь | Тело | Ответ |
 | --- | --- | --- |
 | `GET /users?limit&offset` | — | `200` страница User |
-| `POST /users` | `{"employee_id": "uuid", "login": "d.akhmetova", "password": "min 8 символов", "role": "admin\|secretary\|employee"}` | `201` User; `409 LOGIN_TAKEN`, `409 EMPLOYEE_HAS_ACCOUNT`, `404` сотрудника нет |
-| `PATCH /users/{id}` | любые из `{"role", "password", "active"}` | `200` User. Смена пароля/деактивация завершает сессии пользователя |
+| `POST /users` | `{"employee_id": "uuid", "login": "d.akhmetova", "role": "employee"}`; `role` необязательна, по умолчанию `employee` | `201` UserWithTemporaryPassword; `409 LOGIN_TAKEN`, `409 EMPLOYEE_HAS_ACCOUNT`, `404` сотрудника нет |
+| `POST /users/{id}/reset-password` | — | `200` UserWithTemporaryPassword. Все сессии пользователя отзываются, `must_change_password = true` |
+| `PATCH /users/{id}` | любые из `{"role", "active"}` | `200` User. Деактивация отзывает все сессии; ранее выданные cookie дают `401`. Администратор не может снять с себя роль admin или деактивировать себя (`409 CONFLICT`) |
 
-`login`: 3–64 символа `[A-Za-z0-9._-]`.
+UserWithTemporaryPassword = User + `"temporary_password": "..."`:
+
+```json
+{"id": "...", "login": "d.akhmetova", "role": "employee", "active": true, "must_change_password": true,
+ "employee_id": "...", "employee_fio": "...", "created_at": "...", "temporary_password": "Xq7-...16+ символов"}
+```
+
+- Временный пароль генерируется backend криптографически случайно и возвращается **только** в этом ответе. В БД хранится лишь scrypt-хеш; повторно получить пароль нельзя — только сбросить. Передаётся сотруднику вручную по корпоративному каналу; backend ничего не отправляет.
+- Поле `password` в `POST /users`/`PATCH /users/{id}` больше не принимается (`422 VALIDATION_ERROR`): администратор не задаёт и не видит постоянных паролей.
+- `login`: 3–64 символа `[A-Za-z0-9._-]`, уникален.
 
 ---
 
@@ -206,8 +244,19 @@ Employee:
 | `GET /employees/{id}` | любой вошедший | — | `200` Employee |
 | `POST /employees` | admin | `{"fio": "...", "position": "...", "department": "..."}` (каждое 1–255 символов) | `201` Employee |
 | `PATCH /employees/{id}` | admin | любые из `{"fio", "position", "department", "active"}` | `200` Employee |
+| `GET /employees/me` | любой вошедший с привязанным сотрудником | — | `200` MyProfile; `404`, если у учётной записи нет сотрудника |
 | `POST /employees/{id}/voice` | admin или сам сотрудник | multipart, см. ниже | `201` VoiceEnrollment |
 | `DELETE /employees/{id}/voice` | admin или сам сотрудник | — | `204`; `404` если профиля нет |
+
+MyProfile = Employee + `"login"`:
+
+```json
+{"id": "5c1e...", "fio": "Ахметова Дана Ерлановна", "position": "Экономист", "department": "Финансовый департамент",
+ "active": true, "has_account": true, "user_id": "0f7c...", "login": "d.akhmetova",
+ "voice_profile": {"status": "none", "quality_status": null, "speech_seconds": null, "created_at": null, "consent_at": null}}
+```
+
+Для собственного профиля вместо UUID можно использовать `me`: `POST /employees/me/voice`, `DELETE /employees/me/voice` (разрешается в `employee_id` текущего пользователя; подставить чужой id через `me` нельзя). Сотрудник может зарегистрировать, заменить и удалить только свой голос; чужой → `403 FORBIDDEN`. Неудачная повторная регистрация (`422 VOICE_QUALITY_REJECTED`, `503 MODEL_UNAVAILABLE`, `422 AUDIO_*`) не меняет существующий профиль. Отсутствие голоса не ограничивает вход, поручения и уведомления.
 
 ### `POST /employees/{id}/voice` — multipart/form-data
 
@@ -640,4 +689,5 @@ Notification:
 | Версия | Дата | Изменение | Совместимость |
 | --- | --- | --- | --- |
 | 1.0 | 2026-09-23 | Первая фиксация | — |
+| 1.1.0 | 2026-09-23 | Учётные записи: `must_change_password`, `POST /auth/change-password`, `POST /users/{id}/reset-password`, временный пароль генерирует backend (`password` убран из `POST/PATCH /users`), `403 PASSWORD_CHANGE_REQUIRED`, `GET /employees/me`, `me` в `/employees/{id}/voice`, `Cache-Control: no-store` | `/users` frontend не использует; новые поля пользователя — добавочные; frontend должен обработать `must_change_password` и `PASSWORD_CHANGE_REQUIRED` |
 | 1.0.1 | 2026-09-23 | Добавлены значения `Speaker.review_reasons: split_cluster_suspected` и `Task.review_reasons: deadline_before_meeting` (их выдаёт AI-пайплайн, см. `docs/AI_CONTRACT.md`) | Обратно совместимо: поля — массивы строк, форма ответов не изменилась |

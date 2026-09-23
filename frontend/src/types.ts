@@ -12,11 +12,22 @@ export interface EmployeeRef {
   position: string;
   department: string;
 }
+export interface AccountInfo {
+  id: ID;
+  login: string;
+  role: Role;
+  active: boolean;
+  must_change_password: boolean;
+  employee_id: ID | null;
+  employee_fio: string | null;
+  created_at: string;
+}
 export interface User {
   id: ID;
   login: string;
   role: Role;
   employee: EmployeeRef | null;
+  must_change_password: boolean;
 }
 export interface VoiceProfile {
   status: "none" | "ok" | "needs_review" | "incompatible";

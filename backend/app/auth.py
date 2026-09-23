@@ -21,6 +21,9 @@ SESSION_COOKIE = "darai_session"
 CSRF_COOKIE = "darai_csrf"
 CSRF_HEADER = "X-CSRF-Token"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# The only routes usable while must_change_password is set (backend paths, no /api).
+PASSWORD_CHANGE_ALLOWED = {("GET", "/auth/me"), ("POST", "/auth/change-password"), ("POST", "/auth/logout")}
+MIN_PASSWORD_LENGTH = 10
 
 # scrypt parameters (RFC 7914 interactive profile, ~16 MiB memory).
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
@@ -52,6 +55,11 @@ def verify_password(password: str, encoded: str) -> bool:
 
 # A fixed hash so that unknown logins cost the same as wrong passwords.
 _DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
+def generate_temporary_password() -> str:
+    """Cryptographically random one-time password (~96 bits), shown to the admin once."""
+    return secrets.token_urlsafe(12)
 
 
 def _token_id(token: str) -> str:
@@ -137,6 +145,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> Current
         header = request.headers.get(CSRF_HEADER, "")
         if not header or not hmac.compare_digest(header, sess.csrf_token):
             raise ApiError(403, "CSRF_FAILED", "Отсутствует или неверен CSRF-токен")
+    if user.must_change_password and (request.method, request.url.path.rstrip("/")) not in PASSWORD_CHANGE_ALLOWED:
+        raise ApiError(403, "PASSWORD_CHANGE_REQUIRED", "Смените временный пароль, чтобы продолжить")
     return CurrentUser(user, sess)
 
 

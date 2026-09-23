@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..errors import ApiError, forbidden, not_found
 from ..models import Employee, VoiceProfile, utcnow
-from ..schemas import EmployeeCreate, EmployeeOut, EmployeePatch, Page, VoiceEnrollmentOut
+from ..schemas import EmployeeCreate, EmployeeOut, EmployeePatch, MyProfileOut, Page, VoiceEnrollmentOut
 from ..serializers import employee_out
 from ..uploads import check_audio, remove_tree, safe_suffix, save_upload
 
@@ -49,6 +49,21 @@ def list_employees(q: str | None = None, department: str | None = None,
                       .order_by(Employee.fio, Employee.id).limit(limit).offset(offset)).all()
     info = ai_gateway.voice_model_info()
     return Page[EmployeeOut](items=[employee_out(e, info) for e in rows], total=total, limit=limit, offset=offset)
+
+
+def _resolve(employee_id: str, current: CurrentUser) -> str:
+    """'me' means the caller's own employee; it cannot address anyone else."""
+    if employee_id == "me":
+        if current.employee_id is None:
+            raise not_found("Сотрудник")
+        return str(current.employee_id)
+    return employee_id
+
+
+@router.get("/me", response_model=MyProfileOut)
+def my_profile(current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    emp = _get(db, _resolve("me", current))
+    return MyProfileOut(**employee_out(emp).model_dump(), login=current.user.login)
 
 
 @router.get("/{employee_id}", response_model=EmployeeOut)
@@ -86,7 +101,7 @@ def _check_voice_access(emp: Employee, current: CurrentUser) -> None:
 @router.post("/{employee_id}/voice", response_model=VoiceEnrollmentOut, status_code=201)
 def enroll_voice(employee_id: str, file: UploadFile = File(...), consent: str = Form(...),
                  current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    emp = _get(db, employee_id)
+    emp = _get(db, _resolve(employee_id, current))
     _check_voice_access(emp, current)
     if consent.strip().lower() != "true":
         raise ApiError(422, "VALIDATION_ERROR", "Требуется согласие на обработку голосового профиля",
@@ -140,7 +155,7 @@ def enroll_voice(employee_id: str, file: UploadFile = File(...), consent: str = 
 
 @router.delete("/{employee_id}/voice", status_code=204, response_class=Response)
 def delete_voice(employee_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    emp = _get(db, employee_id)
+    emp = _get(db, _resolve(employee_id, current))
     _check_voice_access(emp, current)
     profile = db.get(VoiceProfile, emp.id)
     if profile is None:

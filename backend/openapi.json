@@ -134,6 +134,48 @@
         }
       }
     },
+    "/auth/change-password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change Password",
+        "description": "Own password only. Revokes every session of the user (this one included)\nand issues a fresh session + CSRF token in this response.",
+        "operationId": "change_password_auth_change_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users": {
       "get": {
         "tags": [
@@ -211,7 +253,50 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UserAdminOut"
+                  "$ref": "#/components/schemas/UserWithTemporaryPassword"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}/reset-password": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Reset Password",
+        "description": "Issue a new temporary password; the old one is never readable.",
+        "operationId": "reset_password_users__user_id__reset_password_post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserWithTemporaryPassword"
                 }
               }
             }
@@ -412,6 +497,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/employees/me": {
+      "get": {
+        "tags": [
+          "employees"
+        ],
+        "summary": "My Profile",
+        "operationId": "my_profile_employees_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyProfileOut"
                 }
               }
             }
@@ -1821,6 +1927,29 @@
         ],
         "title": "Body_upload_recording_meetings__meeting_id__recordings_post"
       },
+      "ChangePasswordIn": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Current Password"
+          },
+          "new_password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "New Password"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "ChangePasswordIn"
+      },
       "ConfirmIn": {
         "properties": {
           "draft_revision": {
@@ -2145,6 +2274,10 @@
             ],
             "title": "Role"
           },
+          "must_change_password": {
+            "type": "boolean",
+            "title": "Must Change Password"
+          },
           "employee": {
             "anyOf": [
               {
@@ -2165,6 +2298,7 @@
           "id",
           "login",
           "role",
+          "must_change_password",
           "employee",
           "csrf_token"
         ],
@@ -2492,6 +2626,67 @@
         "additionalProperties": false,
         "type": "object",
         "title": "MeetingPatch"
+      },
+      "MyProfileOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "fio": {
+            "type": "string",
+            "title": "Fio"
+          },
+          "position": {
+            "type": "string",
+            "title": "Position"
+          },
+          "department": {
+            "type": "string",
+            "title": "Department"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "has_account": {
+            "type": "boolean",
+            "title": "Has Account"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "voice_profile": {
+            "$ref": "#/components/schemas/VoiceStatusOut"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "fio",
+          "position",
+          "department",
+          "active",
+          "has_account",
+          "user_id",
+          "voice_profile",
+          "login"
+        ],
+        "title": "MyProfileOut"
       },
       "NotificationOut": {
         "properties": {
@@ -3584,6 +3779,10 @@
             "type": "boolean",
             "title": "Active"
           },
+          "must_change_password": {
+            "type": "boolean",
+            "title": "Must Change Password"
+          },
           "employee_id": {
             "anyOf": [
               {
@@ -3619,6 +3818,7 @@
           "login",
           "role",
           "active",
+          "must_change_password",
           "employee_id",
           "employee_fio",
           "created_at"
@@ -3636,12 +3836,6 @@
             "type": "string",
             "title": "Login"
           },
-          "password": {
-            "type": "string",
-            "maxLength": 256,
-            "minLength": 8,
-            "title": "Password"
-          },
           "role": {
             "type": "string",
             "enum": [
@@ -3649,16 +3843,15 @@
               "secretary",
               "employee"
             ],
-            "title": "Role"
+            "title": "Role",
+            "default": "employee"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "employee_id",
-          "login",
-          "password",
-          "role"
+          "login"
         ],
         "title": "UserCreate"
       },
@@ -3682,6 +3875,10 @@
             ],
             "title": "Role"
           },
+          "must_change_password": {
+            "type": "boolean",
+            "title": "Must Change Password"
+          },
           "employee": {
             "anyOf": [
               {
@@ -3698,6 +3895,7 @@
           "id",
           "login",
           "role",
+          "must_change_password",
           "employee"
         ],
         "title": "UserOut"
@@ -3719,19 +3917,6 @@
               }
             ],
             "title": "Role"
-          },
-          "password": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 256,
-                "minLength": 8
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Password"
           },
           "active": {
             "anyOf": [
@@ -3792,6 +3977,81 @@
           "fio"
         ],
         "title": "UserRef"
+      },
+      "UserWithTemporaryPassword": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "secretary",
+              "employee"
+            ],
+            "title": "Role"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "must_change_password": {
+            "type": "boolean",
+            "title": "Must Change Password"
+          },
+          "employee_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "employee_fio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Fio"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "temporary_password": {
+            "type": "string",
+            "title": "Temporary Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "login",
+          "role",
+          "active",
+          "must_change_password",
+          "employee_id",
+          "employee_fio",
+          "created_at",
+          "temporary_password"
+        ],
+        "title": "UserWithTemporaryPassword"
       },
       "UtteranceOut": {
         "properties": {

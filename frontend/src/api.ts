@@ -1,4 +1,6 @@
 import type {
+  AccountInfo,
+  Role,
   Employee,
   EmployeeInput,
   Meeting,
@@ -59,6 +61,8 @@ function failure(status: number, body: unknown) {
   );
   if (status === 401 && result.code !== "INVALID_CREDENTIALS")
     window.dispatchEvent(new Event("darai:unauthorized"));
+  if (result.code === "PASSWORD_CHANGE_REQUIRED")
+    window.dispatchEvent(new Event("darai:password-required"));
   return result;
 }
 export async function request<T>(
@@ -129,6 +133,38 @@ const query = (values: Record<string, string | number | boolean | undefined>) =>
       .map(([k, v]) => [k, String(v)]),
   ).toString();
 export const api = {
+  changePassword: (current_password: string, new_password: string) =>
+    request<{ user: User; csrf_token: string }>(
+      "/auth/change-password",
+      json("POST", { current_password, new_password }),
+    ),
+  issueAccount: async (employee_id: string, login: string, role: Role) => {
+    const r = await request<AccountInfo & { temporary_password: string }>(
+      "/users",
+      json("POST", { employee_id, login, role }),
+    );
+    return { userId: r.id, login: r.login, password: r.temporary_password };
+  },
+  resetPassword: async (id: string) => {
+    const r = await request<AccountInfo & { temporary_password: string }>(
+      `/users/${encodeURIComponent(id)}/reset-password`,
+      json("POST"),
+    );
+    return { userId: r.id, login: r.login, password: r.temporary_password };
+  },
+  account: async (id: string, signal?: AbortSignal) => {
+    for (let offset = 0; ; offset += 200) {
+      const p = await request<Page<AccountInfo>>(
+        `/users?limit=200&offset=${offset}`,
+        { signal },
+      );
+      const found = p.items.find((u) => u.id === id);
+      if (found) return found;
+      if (offset + p.items.length >= p.total || !p.items.length) return null;
+    }
+  },
+  myProfile: (signal?: AbortSignal) =>
+    request<Employee & { login: string }>("/employees/me", { signal }),
   me: (signal?: AbortSignal) =>
     request<User & { csrf_token: string }>("/auth/me", { signal }),
   login: (login: string, password: string) =>

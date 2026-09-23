@@ -7,13 +7,11 @@ afterEach(() => {
 });
 describe("cookie session and error transport", () => {
   it("отправляет cookie и CSRF в изменяющем запросе", async () => {
-    const fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ saved: true }), {
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
+    const fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ saved: true }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
     vi.stubGlobal("fetch", fetch);
     setCsrf("in-memory-test-token");
     await request("/meetings/fixture/summary", {
@@ -29,20 +27,18 @@ describe("cookie session and error transport", () => {
   it("сохраняет код конфликта и сообщение backend", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(
-            JSON.stringify({
-              error: {
-                code: "DRAFT_REVISION_MISMATCH",
-                message: "Протокол изменился",
-                details: { current_draft_revision: 7 },
-              },
-            }),
-            { status: 409 },
-          ),
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "DRAFT_REVISION_MISMATCH",
+              message: "Протокол изменился",
+              details: { current_draft_revision: 7 },
+            },
+          }),
+          { status: 409 },
         ),
+      ),
     );
     await expect(
       request("/meetings/fixture/confirm", { method: "POST" }),
@@ -59,16 +55,14 @@ describe("cookie session and error transport", () => {
     vi.stubGlobal("window", target);
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(
-            JSON.stringify({
-              error: { code: "UNAUTHENTICATED", message: "Войдите снова" },
-            }),
-            { status: 401 },
-          ),
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: { code: "UNAUTHENTICATED", message: "Войдите снова" },
+          }),
+          { status: 401 },
         ),
+      ),
     );
     await expect(request("/auth/me")).rejects.toBeInstanceOf(ApiError);
     expect(expire).toHaveBeenCalledOnce();
@@ -76,13 +70,11 @@ describe("cookie session and error transport", () => {
   it("HTML от ошибочного SPA fallback не считается успешным API", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response("<html>SPA</html>", {
-            headers: { "Content-Type": "text/html" },
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        new Response("<html>SPA</html>", {
+          headers: { "Content-Type": "text/html" },
+        }),
+      ),
     );
     await expect(request("/auth/me")).rejects.toMatchObject({
       code: "INVALID_RESPONSE",
@@ -108,4 +100,31 @@ describe("cookie session and error transport", () => {
     await pending;
     expect(vi.getTimerCount()).toBe(0);
   });
+});
+
+it("403 PASSWORD_CHANGE_REQUIRED централизованно включает смену пароля", async () => {
+  const target = new EventTarget();
+  const required = vi.fn();
+  target.addEventListener("darai:password-required", required);
+  vi.stubGlobal("window", target);
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "PASSWORD_CHANGE_REQUIRED",
+              message: "Смените пароль",
+            },
+          }),
+          { status: 403 },
+        ),
+      ),
+  );
+  await expect(request("/employees")).rejects.toMatchObject({
+    code: "PASSWORD_CHANGE_REQUIRED",
+  });
+  expect(required).toHaveBeenCalledOnce();
 });

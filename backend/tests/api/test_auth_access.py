@@ -43,11 +43,9 @@ def test_roles_enforced(org):
 
 
 def test_duplicate_login_and_account(admin, org):
-    r = admin.post("/users", json={"employee_id": org["guest"]["id"], "login": "dana", "password": "password-123",
-                                   "role": "employee"})
+    r = admin.post("/users", json={"employee_id": org["guest"]["id"], "login": "dana", "role": "employee"})
     assert r.json()["error"]["code"] == "LOGIN_TAKEN"
-    r = admin.post("/users", json={"employee_id": org["dana"]["id"], "login": "dana2", "password": "password-123",
-                                   "role": "employee"})
+    r = admin.post("/users", json={"employee_id": org["dana"]["id"], "login": "dana2", "role": "employee"})
     assert r.json()["error"]["code"] == "EMPLOYEE_HAS_ACCOUNT"
 
 

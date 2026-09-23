@@ -23,7 +23,8 @@ import {
   useAction,
   useResource,
 } from "./ui";
-import { Employees, EmployeeDetail } from "./Employees";
+import { PasswordChange } from "./Access";
+import { Employees, EmployeeDetail, MyProfile } from "./Employees";
 import { Meetings, NewMeeting, MeetingDetail } from "./Meetings";
 import { MyTasks, Notifications } from "./Work";
 const AuthContext = createContext<User | null>(null);
@@ -189,6 +190,7 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
                 </div>
                 <div className="user-role">{roles[user.role]}</div>
               </div>
+              {user.employee && <Link to="/profile">Мой профиль</Link>}
               <button
                 className="text"
                 disabled={action.busy}
@@ -214,6 +216,7 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
               <Route path="/employees" element={<Employees />} />
               <Route path="/employees/new" element={<EmployeeDetail />} />
               <Route path="/employees/:id" element={<EmployeeDetail />} />
+              <Route path="/profile" element={<MyProfile />} />
               <Route path="/tasks" element={<MyTasks />} />
               <Route path="/notifications" element={<Notifications />} />
               <Route
@@ -234,6 +237,7 @@ function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
 }
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [landing, setLanding] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>();
   const [attempt, setAttempt] = useState(0);
@@ -264,8 +268,14 @@ export default function App() {
       setUser(null);
       setCsrf("");
     };
+    const required = () =>
+      setUser((u) => (u ? { ...u, must_change_password: true } : u));
     window.addEventListener("darai:unauthorized", expire);
-    return () => window.removeEventListener("darai:unauthorized", expire);
+    window.addEventListener("darai:password-required", required);
+    return () => {
+      window.removeEventListener("darai:unauthorized", expire);
+      window.removeEventListener("darai:password-required", required);
+    };
   }, []);
   return (
     <BrowserRouter>
@@ -279,10 +289,77 @@ export default function App() {
           </div>
         </div>
       ) : user ? (
-        <Shell user={user} onLogout={() => setUser(null)} />
+        user.must_change_password ? (
+          <PasswordGate
+            user={user}
+            onUser={(u) => {
+              setLanding(u ? (u.employee ? "/profile" : "/meetings") : null);
+              setUser(u);
+            }}
+          />
+        ) : (
+          <Landing
+            user={user}
+            target={landing}
+            arrived={() => setLanding(null)}
+            onLogout={() => setUser(null)}
+          />
+        )
       ) : (
-        <Login onLogin={setUser} />
+        <Login
+          onLogin={(u) => {
+            setLanding(
+              u.employee && u.role === "employee" ? "/profile" : "/meetings",
+            );
+            setUser(u);
+          }}
+        />
       )}
     </BrowserRouter>
+  );
+}
+
+function PasswordGate({
+  user,
+  onUser,
+}: {
+  user: User;
+  onUser: (user: User | null) => void;
+}) {
+  return (
+    <PasswordChange
+      change={async (current, next) => {
+        const r = await api.changePassword(current, next);
+        setCsrf(r.csrf_token);
+        onUser(r.user);
+      }}
+      onLogout={async () => {
+        await api.logout();
+        setCsrf("");
+        onUser(null);
+      }}
+    />
+  );
+}
+
+function Landing({
+  user,
+  target,
+  arrived,
+  onLogout,
+}: {
+  user: User;
+  target: string | null;
+  arrived: () => void;
+  onLogout: () => void;
+}) {
+  const location = useLocation();
+  useEffect(() => {
+    if (target && location.pathname === target) arrived();
+  }, [target, location.pathname, arrived]);
+  return target && location.pathname !== target ? (
+    <Navigate to={target} replace />
+  ) : (
+    <Shell user={user} onLogout={onLogout} />
   );
 }

@@ -911,3 +911,26 @@ td small {
 #main:focus {
   outline: none;
 }
+.access-dialog {
+  border: 1px solid #d8e1dd;
+  border-radius: 12px;
+  padding: 28px;
+  max-width: 510px;
+  width: calc(100% - 32px);
+  color: #233b36;
+  box-shadow: 0 20px 80px #153d3733;
+}
+.access-dialog::backdrop {
+  background: #102f2b99;
+}
+.voice-preview {
+  width: 100%;
+  margin: 12px 0;
+}
+.reading-text {
+  border-left: 3px solid #9cb6a7;
+  padding: 12px 16px;
+  background: #f5f8f3;
+  color: #385445;
+  font-size: 13px;
+}

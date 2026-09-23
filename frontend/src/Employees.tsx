@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, upload } from "./api";
-import type { Employee, EmployeeInput } from "./types";
+import { api, ApiError, upload } from "./api";
+import type { Employee, EmployeeInput, Role } from "./types";
 import { useUser } from "./App";
 import {
   ActionStatus,
@@ -15,6 +15,7 @@ import {
   useAction,
   useResource,
 } from "./ui";
+import { AccountFields, AccessDialog } from "./Access";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { dateTime } from "./utils";
 export const voiceLabels = {
@@ -202,6 +203,10 @@ function EmployeeForm({
   const user = useUser();
   const navigate = useNavigate();
   const action = useAction();
+  const [wantAccount, setWantAccount] = useState(false);
+  const [login, setLogin] = useState("");
+  const [role, setRole] = useState<Role>("employee");
+  const [issuing, setIssuing] = useState(false);
   const [form, setForm] = useState<EmployeeInput>({
     fio: employee?.fio || "",
     position: employee?.position || "",
@@ -212,7 +217,10 @@ function EmployeeForm({
     void action.run(async () => {
       const saved = await api.saveEmployee(employee?.id, form);
       onUpdate(saved);
-      if (!employee) navigate(`/employees/${saved.id}`, { replace: true });
+      if (!employee) {
+        if (wantAccount) setIssuing(true);
+        else navigate(`/employees/${saved.id}`, { replace: true });
+      }
     });
   }
   return (
@@ -246,6 +254,28 @@ function EmployeeForm({
                 />
               </Field>
             ))}
+            {!employee && (
+              <>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={wantAccount}
+                    disabled={action.busy}
+                    onChange={(e) => setWantAccount(e.target.checked)}
+                  />
+                  Создать учётную запись
+                </label>
+                {wantAccount && (
+                  <AccountFields
+                    login={login}
+                    role={role}
+                    onLogin={setLogin}
+                    onRole={setRole}
+                    disabled={action.busy}
+                  />
+                )}
+              </>
+            )}
             <ActionStatus action={action} />
             {user.role === "admin" && (
               <button disabled={action.busy}>
@@ -265,12 +295,31 @@ function EmployeeForm({
             </Notice>
           )}
         </section>
-        {employee && <VoicePanel employee={employee} onUpdate={onUpdate} />}
+        {employee && (
+          <div>
+            {user.role === "admin" && (
+              <AccountPanel employee={employee} onUpdate={onUpdate} />
+            )}
+            <VoicePanel employee={employee} onUpdate={onUpdate} />
+          </div>
+        )}
+        {issuing && employee && (
+          <AccessDialog
+            issue={() => api.issueAccount(employee.id, login, role)}
+            onIssued={(userId) =>
+              onUpdate({ ...employee, has_account: true, user_id: userId })
+            }
+            onClose={() => {
+              setIssuing(false);
+              navigate(`/employees/${employee.id}`, { replace: true });
+            }}
+          />
+        )}
       </div>
     </>
   );
 }
-function VoicePanel({
+export function VoicePanel({
   employee,
   onUpdate,
 }: {
@@ -278,13 +327,26 @@ function VoicePanel({
   onUpdate: (e: Employee) => void;
 }) {
   const user = useUser();
-  const allowed = user.role === "admin" || user.employee?.id === employee.id;
+  const allowed = user.employee?.id === employee.id;
   const [file, setFile] = useState<File | null>(null);
   const [consent, setConsent] = useState(false);
   const [recording, setRecording] = useState(false);
   const [progress, setProgress] = useState(0);
   const [remove, setRemove] = useState(false);
   const [quality, setQuality] = useState("");
+  const [preview, setPreview] = useState("");
+  const [previewError, setPreviewError] = useState("");
+  const [deferred, setDeferred] = useState(false);
+  useEffect(() => {
+    setPreviewError("");
+    if (!file) {
+      setPreview("");
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
   const action = useAction();
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
@@ -292,13 +354,43 @@ function VoicePanel({
     if (!file || !consent) return;
     setProgress(0);
     controller.current = new AbortController();
-    const result = await upload<{ quality_status: string; reasons: string[] }>(
-      `/employees/${employee.id}/voice`,
-      file,
-      setProgress,
-      controller.current.signal,
-      true,
-    );
+    let result: { quality_status: string; reasons: string[] };
+    try {
+      result = await upload<{ quality_status: string; reasons: string[] }>(
+        `/employees/${employee.id}/voice`,
+        file,
+        setProgress,
+        controller.current.signal,
+        true,
+      );
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === "VOICE_QUALITY_REJECTED"
+      ) {
+        const reasons = error.details?.reasons as string[] | undefined;
+        const tips: Record<string, string> = {
+          too_short:
+            "Прочитайте текст целиком: нужно 20–30 секунд чистой речи.",
+          silence: "Проверьте микрофон и говорите отчётливо в тихом месте.",
+          clipping: "Отодвиньтесь от микрофона или уменьшите его усиление.",
+          inconsistent_voice: "В образце должен говорить только один человек.",
+        };
+        throw new Error(
+          [
+            error.message,
+            ...(reasons || []).map(
+              (r) => tips[r] || "Запишите чистую речь без посторонних звуков.",
+            ),
+          ].join(" "),
+        );
+      }
+      if (error instanceof ApiError && error.code === "AUDIO_INVALID")
+        throw new Error(
+          "Не удалось прочитать аудио. Загрузите WAV, MP3, M4A или WebM с аудиодорожкой.",
+        );
+      throw error;
+    }
     setQuality(
       result.quality_status === "needs_review"
         ? "Профиль сохранён с замечаниями к качеству. Рекомендуется записать образец заново."
@@ -336,6 +428,32 @@ function VoicePanel({
             Запишите 20–30 секунд спокойной речи одного человека, без музыки и
             посторонних голосов.
           </p>
+          {employee.voice_profile.status === "none" && (
+            <>
+              <button
+                className="text"
+                disabled={recording || action.busy}
+                onClick={() => setDeferred((v) => !v)}
+              >
+                {deferred
+                  ? "Перейти к регистрации голоса"
+                  : "Зарегистрировать позже"}
+              </button>
+              {deferred && (
+                <Notice>
+                  Вы можете работать без голосового профиля. Вернитесь в «Мой
+                  профиль», когда будете готовы зарегистрировать голос.
+                </Notice>
+              )}
+            </>
+          )}
+          <p className="reading-text">
+            Текст для чтения: «Меня зовут {employee.fio}. Я участвую в рабочих
+            совещаниях нашей команды. Сегодня мы обсуждаем планы, распределяем
+            задачи и согласовываем сроки. Я говорю спокойно и отчётливо.
+            Әріптестермен бірге жұмыс жоспарын талқылаймыз. Әр тапсырманың
+            мақсаты мен орындалу мерзімін нақтылаймыз.»
+          </p>
           <label className="check">
             <input
               type="checkbox"
@@ -362,6 +480,32 @@ function VoicePanel({
             <p className="filesize">
               {file.name} · {(file.size / 1024 / 1024).toFixed(1)} МБ
             </p>
+          )}
+          {preview && (
+            <div>
+              <label>
+                Прослушайте образец перед отправкой
+                <audio
+                  className="voice-preview"
+                  aria-label="Прослушать голосовой образец"
+                  controls
+                  src={preview}
+                  onError={() =>
+                    setPreviewError(
+                      "Браузер не может воспроизвести этот формат. Выберите WAV, MP3 или запишите новый образец.",
+                    )
+                  }
+                />
+              </label>
+              {previewError && <Notice kind="warning">{previewError}</Notice>}
+              <button
+                className="text"
+                disabled={recording || action.busy}
+                onClick={() => setFile(null)}
+              >
+                Удалить образец и записать заново
+              </button>
+            </div>
           )}
           {action.busy && (
             <progress
@@ -421,9 +565,164 @@ function VoicePanel({
         </>
       ) : (
         <Notice>
-          Управлять профилем может сам сотрудник или администратор.
+          Сотрудник регистрирует голос самостоятельно: выдайте ему доступ и
+          предложите открыть «Мой профиль». Не записывайте свой голос вместо
+          голоса сотрудника.
         </Notice>
       )}
     </section>
+  );
+}
+
+function AccountPanel({
+  employee,
+  onUpdate,
+}: {
+  employee: Employee;
+  onUpdate: (e: Employee) => void;
+}) {
+  const currentUser = useUser();
+  const [login, setLogin] = useState("");
+  const [role, setRole] = useState<Role>("employee");
+  const [issue, setIssue] = useState(false);
+  const [reset, setReset] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const r = useResource(
+    (signal) =>
+      employee.user_id
+        ? api.account(employee.user_id, signal)
+        : Promise.resolve(null),
+    employee.user_id || "none",
+  );
+  return (
+    <section className="panel">
+      <h2>Доступ в CRM</h2>
+      <Badge tone={employee.has_account ? "success" : "neutral"}>
+        {employee.has_account ? "Учётная запись создана" : "Доступ не выдан"}
+      </Badge>
+      {employee.has_account ? (
+        <>
+          <ResourceState resource={r} />
+          {r.data && (
+            <p>
+              Логин: {r.data.login}
+              <br />
+              Состояние: {r.data.active ? "Активна" : "Отключена"}
+              <br />
+              {r.data.must_change_password
+                ? "Ожидается смена временного пароля"
+                : "Пароль установлен сотрудником"}
+            </p>
+          )}
+          <button
+            className="secondary"
+            disabled={!employee.user_id || employee.user_id === currentUser.id}
+            onClick={() => setConfirm(true)}
+          >
+            Сбросить пароль
+          </button>
+          {employee.user_id === currentUser.id && (
+            <p>
+              <small>
+                Сброс этой учётной записи завершит вашу сессию и закроет
+                одноразовый пароль. Для её сброса обратитесь к другому
+                администратору.
+              </small>
+            </p>
+          )}
+          {confirm && (
+            <Notice kind="warning">
+              Все текущие сессии сотрудника завершатся. Будет выдан новый
+              временный пароль.
+              <div className="form-actions">
+                <button
+                  onClick={() => {
+                    setConfirm(false);
+                    setReset(true);
+                  }}
+                >
+                  Подтвердить сброс пароля
+                </button>
+                <button className="secondary" onClick={() => setConfirm(false)}>
+                  Отмена
+                </button>
+              </div>
+            </Notice>
+          )}
+        </>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setIssue(true);
+          }}
+        >
+          <AccountFields
+            login={login}
+            role={role}
+            onLogin={setLogin}
+            onRole={setRole}
+          />
+          <button>Создать учётную запись</button>
+        </form>
+      )}
+      {(issue || reset) && (
+        <AccessDialog
+          reset={reset}
+          issue={() =>
+            reset
+              ? api.resetPassword(employee.user_id!)
+              : api.issueAccount(employee.id, login, role)
+          }
+          onIssued={(userId) => {
+            onUpdate({ ...employee, has_account: true, user_id: userId });
+            r.reload();
+          }}
+          onClose={() => {
+            setIssue(false);
+            setReset(false);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+export function MyProfile() {
+  const user = useUser();
+  const r = useResource((signal) => api.myProfile(signal), "my-profile");
+  return (
+    <>
+      <PageTitle
+        title="Мой профиль"
+        description="Ваши данные и голосовой профиль для участия в совещаниях."
+      />
+      {!user.employee ? (
+        <Notice>У этой учётной записи нет профиля сотрудника.</Notice>
+      ) : (
+        <>
+          <ResourceState resource={r} />
+          {r.data && (
+            <div className="grid-2">
+              <section className="panel">
+                <h2>{r.data.fio}</h2>
+                <p>{r.data.position}</p>
+                <p>{r.data.department}</p>
+                <p>Логин: {r.data.login}</p>
+                {r.data.voice_profile.status === "none" && (
+                  <Notice>
+                    Зарегистрируйте голос, чтобы система могла предложить ваше
+                    имя в записи совещания. Это можно сделать позже.
+                  </Notice>
+                )}
+              </section>
+              <VoicePanel
+                employee={r.data}
+                onUpdate={(e) => r.setData({ ...e, login: r.data!.login })}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </>
   );
 }

@@ -48,6 +48,7 @@ class UserOut(BaseModel):
     id: uuid.UUID
     login: str
     role: Role
+    must_change_password: bool
     employee: EmployeeBrief | None
 
 
@@ -74,8 +75,7 @@ LOGIN_RE = re.compile(r"^[A-Za-z0-9._-]{3,64}$")
 class UserCreate(Strict):
     employee_id: uuid.UUID
     login: str
-    password: str = Field(min_length=8, max_length=256)
-    role: Role
+    role: Role = "employee"
 
     @field_validator("login")
     @classmethod
@@ -87,8 +87,12 @@ class UserCreate(Strict):
 
 class UserPatch(Strict):
     role: Role | None = None
-    password: str | None = Field(default=None, min_length=8, max_length=256)
     active: bool | None = None
+
+
+class ChangePasswordIn(Strict):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
 
 
 class UserAdminOut(BaseModel):
@@ -96,12 +100,17 @@ class UserAdminOut(BaseModel):
     login: str
     role: Role
     active: bool
+    must_change_password: bool
     employee_id: uuid.UUID | None
     employee_fio: str | None
     created_at: datetime
 
 
 # ------------------------------------------------------------------ employees
+
+
+class UserWithTemporaryPassword(UserAdminOut):
+    temporary_password: str
 
 
 class EmployeeCreate(Strict):
@@ -134,6 +143,10 @@ class EmployeeOut(BaseModel):
     has_account: bool
     user_id: uuid.UUID | None
     voice_profile: VoiceStatusOut
+
+
+class MyProfileOut(EmployeeOut):
+    login: str
 
 
 class VoiceEnrollmentOut(BaseModel):

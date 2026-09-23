@@ -99,6 +99,14 @@ def create_app() -> FastAPI:
                   description="Локальная CRM совещаний. Контракт: docs/API_CONTRACT.md. "
                               "Маршруты без префикса /api — его удаляет прокси frontend.")
     install_error_handlers(app)
+
+    @app.middleware("http")
+    async def no_store(request, call_next):
+        # Responses may carry temporary passwords, CSRF tokens or meeting content.
+        response = await call_next(request)
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
     for r in (system.router, auth_users.router, auth_users.users, employees.router, meetings.router,
               tasks.router, notifications.router):
         app.include_router(r)

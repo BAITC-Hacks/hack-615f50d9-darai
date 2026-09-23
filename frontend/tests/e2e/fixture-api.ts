@@ -1,6 +1,7 @@
 // Synthetic contract fixture. Imported only by Playwright; never bundled into production.
 import type { Page as BrowserPage } from "@playwright/test";
 import type {
+  AccountInfo,
   Employee,
   Meeting,
   Notification,
@@ -18,9 +19,10 @@ export async function fixtureApi(
     uploadError?: boolean;
   } = {},
 ) {
-  const user: User = {
+  let user: User = {
     id: id(1),
     login: "fixture-admin",
+    must_change_password: false,
     role: options.role || "admin",
     employee: {
       id: id(2),
@@ -44,7 +46,16 @@ export async function fixtureApi(
       },
     },
   ];
+  const adminUser = user;
+  let csrf = "fixture-csrf";
+  const accounts: Array<AccountInfo & { fixturePassword: string }> = [];
   const state = {
+    accounts,
+    failAccountOnce: false,
+    qualityError: false,
+    get user() {
+      return user;
+    },
     loggedIn: false,
     employees,
     meetings: [] as Meeting[],
@@ -167,6 +178,21 @@ export async function fixtureApi(
     const fail = (status: number, code: string, message: string) =>
       ok({ error: { code, message, details: null } }, status);
     if (path === "/auth/login") {
+      if (body.login === "fixture-admin") user = adminUser;
+      else {
+        const account = accounts.find(
+          (a) => a.login === body.login && a.fixturePassword === body.password,
+        );
+        if (!account)
+          return fail(401, "INVALID_CREDENTIALS", "Неверный логин или пароль");
+        user = {
+          id: account.id,
+          login: account.login,
+          role: account.role,
+          must_change_password: account.must_change_password,
+          employee: employees.find((e) => e.id === account.employee_id)!,
+        };
+      }
       state.loggedIn = true;
       return route.fulfill({
         status: 200,
@@ -174,18 +200,80 @@ export async function fixtureApi(
         headers: {
           "Set-Cookie": "darai_session=fixture; HttpOnly; Path=/; SameSite=Lax",
         },
-        body: JSON.stringify({ user, csrf_token: "fixture-csrf" }),
+        body: JSON.stringify({ user, csrf_token: csrf }),
       });
     }
     if (!state.loggedIn)
       return fail(401, "UNAUTHENTICATED", "Тестовая сессия завершена");
-    if (method !== "GET" && req.headers()["x-csrf-token"] !== "fixture-csrf")
+    if (method !== "GET" && req.headers()["x-csrf-token"] !== csrf)
       return fail(403, "CSRF_FAILED", "Нет CSRF заголовка");
-    if (path === "/auth/me") return ok({ ...user, csrf_token: "fixture-csrf" });
+    if (path === "/auth/me") return ok({ ...user, csrf_token: csrf });
     if (path === "/auth/logout") {
       state.loggedIn = false;
       return route.fulfill({ status: 204 });
     }
+    if (path === "/auth/change-password") {
+      const account = accounts.find((a) => a.id === user.id)!;
+      if (!account || body.current_password !== account.fixturePassword)
+        return fail(422, "INVALID_CURRENT_PASSWORD", "Неверный текущий пароль");
+      account.fixturePassword = body.new_password;
+      account.must_change_password = false;
+      user = { ...user, must_change_password: false };
+      csrf = "rotated-fixture-csrf";
+      return ok({ user, csrf_token: csrf });
+    }
+    if (user.must_change_password)
+      return fail(
+        403,
+        "PASSWORD_CHANGE_REQUIRED",
+        "Необходимо сменить временный пароль",
+      );
+    if (path === "/users" && method === "GET")
+      return ok(
+        paged(
+          accounts.map(({ fixturePassword, ...a }) => a),
+          url.searchParams,
+        ),
+      );
+    if (path === "/users" && method === "POST") {
+      if (state.failAccountOnce) {
+        state.failAccountOnce = false;
+        return fail(409, "LOGIN_TAKEN", "Этот логин уже занят");
+      }
+      const employee = employees.find((e) => e.id === body.employee_id)!;
+      if (employee.has_account)
+        return fail(409, "EMPLOYEE_HAS_ACCOUNT", "Аккаунт уже существует");
+      const account: AccountInfo & { fixturePassword: string } = {
+        id: id(700 + accounts.length),
+        login: body.login,
+        role: body.role,
+        active: true,
+        must_change_password: true,
+        employee_id: employee.id,
+        employee_fio: employee.fio,
+        created_at: "2026-09-23T10:00:00Z",
+        fixturePassword: "Temporary-fixture-123",
+      };
+      accounts.push(account);
+      employee.has_account = true;
+      employee.user_id = account.id;
+      const { fixturePassword, ...out } = account;
+      return ok({ ...out, temporary_password: fixturePassword }, 201);
+    }
+    if (path.startsWith("/users/") && path.endsWith("/reset-password")) {
+      const account = accounts.find(
+        (a) => path === `/users/${a.id}/reset-password`,
+      )!;
+      account.must_change_password = true;
+      account.fixturePassword = "Reset-fixture-456";
+      const { fixturePassword, ...out } = account;
+      return ok({ ...out, temporary_password: fixturePassword });
+    }
+    if (path === "/employees/me")
+      return ok({
+        ...employees.find((e) => e.id === user.employee?.id),
+        login: user.login,
+      });
     if (path === "/employees" && method === "GET")
       return ok(
         paged(
@@ -229,6 +317,17 @@ export async function fixtureApi(
         }
         if (!req.postDataBuffer()?.includes(Buffer.from('name="consent"')))
           return fail(422, "VALIDATION_ERROR", "consent обязателен");
+        if (state.qualityError)
+          return ok(
+            {
+              error: {
+                code: "VOICE_QUALITY_REJECTED",
+                message: "Слишком мало чистой речи",
+                details: { reasons: ["too_short"] },
+              },
+            },
+            422,
+          );
         employee.voice_profile = {
           status: "ok",
           quality_status: "ok",

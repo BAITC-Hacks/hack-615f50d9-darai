@@ -11,7 +11,10 @@ async function login(page: Page) {
     .getByRole("button", { name: "Войти в рабочее пространство" })
     .click();
   await expect(
-    page.getByRole("heading", { name: "Совещания", exact: true }),
+    page.getByRole("heading", {
+      name: /^(Совещания|Мой профиль)$/,
+      exact: true,
+    }),
   ).toBeVisible();
 }
 async function meeting(page: Page) {

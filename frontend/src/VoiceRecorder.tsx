@@ -62,6 +62,7 @@ export function VoiceRecorder({
       const r = new MediaRecorder(media, mime ? { mimeType: mime } : undefined);
       recorder.current = r;
       const chunks: Blob[] = [];
+      let failed = false;
       r.ondataavailable = (e) => {
         if (e.data.size) chunks.push(e.data);
       };
@@ -70,6 +71,7 @@ export function VoiceRecorder({
         if (alive.current) {
           setRecording(false);
           onRecordingChange(false);
+          if (failed) return;
           const type = r.mimeType.split(";")[0];
           onFile(
             new File(
@@ -81,7 +83,9 @@ export function VoiceRecorder({
         }
       };
       r.onerror = () => {
+        failed = true;
         media.getTracks().forEach((t) => t.stop());
+        if (!alive.current) return;
         setError("Не удалось записать звук. Попробуйте загрузить файл.");
         setRecording(false);
         onRecordingChange(false);
@@ -99,9 +103,11 @@ export function VoiceRecorder({
             ? "Доступ к микрофону запрещён. Разрешите его в браузере или загрузите образец."
             : e instanceof DOMException && e.name === "NotFoundError"
               ? "Микрофон не найден. Подключите его или загрузите образец."
-              : e instanceof Error
-                ? e.message
-                : "Нет доступа к микрофону.",
+              : e instanceof DOMException && e.name === "NotSupportedError"
+                ? "Формат записи не поддерживается браузером. Загрузите WAV, MP3 или M4A."
+                : e instanceof Error
+                  ? e.message
+                  : "Нет доступа к микрофону.",
         );
     } finally {
       if (currentRequest === requestId.current) {

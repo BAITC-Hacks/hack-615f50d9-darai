@@ -116,10 +116,20 @@ def make_employee(admin: Api, fio: str, login: str | None = None, role: str = "e
     assert r.status_code == 201, r.text
     emp = r.json()
     if login:
-        r = admin.post("/users", json={"employee_id": emp["id"], "login": login, "password": "password-123",
-                                       "role": role})
+        r = admin.post("/users", json={"employee_id": emp["id"], "login": login, "role": role})
         assert r.status_code == 201, r.text
+        activate(login, r.json()["temporary_password"])
     return emp
+
+
+def activate(login: str, temporary: str, new_password: str = "password-123") -> None:
+    """First login with the temporary password + mandatory change."""
+    c = TestClient(app)
+    r = c.post("/auth/login", json={"login": login, "password": temporary})
+    assert r.status_code == 200 and r.json()["user"]["must_change_password"] is True, r.text
+    r = c.post("/auth/change-password", json={"current_password": temporary, "new_password": new_password},
+               headers={"X-CSRF-Token": r.json()["csrf_token"]})
+    assert r.status_code == 200, r.text
 
 
 @pytest.fixture
