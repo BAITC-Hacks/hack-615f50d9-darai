@@ -98,7 +98,7 @@ LivePreviewUtterance(id="preview-N", start, end, speaker_label=None, text, is_fi
 
 ## Конкуренция
 
-`app.ml.compute_lock` — один процессный lock на тяжёлые CPU-задачи. `process_recording` ждёт его. Preview берёт его без ожидания, а если lock занят, возвращает `waiting`. Регистрация голоса (лёгкая, только WeSpeaker) его не берёт. Backend дополнительно не запускает preview во время полной обработки. Двойная защита безопасна.
+`app.ml.compute_lock` — один процессный lock на тяжёлые CPU-задачи. `process_recording` ждёт его. Preview берёт его без ожидания, а если lock занят, возвращает `waiting` с `retry_after_ms`. Lock держится весь вызов, включая `on_update`. Регистрация голоса (лёгкая, только WeSpeaker) его не берёт. Backend дополнительно не запускает preview во время полной обработки. Двойная защита безопасна.
 
 ## Финализация
 
@@ -106,27 +106,53 @@ LivePreviewUtterance(id="preview-N", start, end, speaker_label=None, text, is_fi
 
 ## Алгоритм (для справки)
 
-1. FFmpeg декодирует снимок в 16 kHz mono (`-err_detect ignore_err`).
-2. Окно `[q, q + LIVE_PREVIEW_WINDOW_SECONDS]`, где `q` — самая тихая 20-мс точка около `committed_until − LIVE_PREVIEW_OVERLAP_SECONDS` (±0.75 с). Окно, начатое внутри слова, вызывало у Whisper галлюцинацию «Продолжение следует...» на всё окно. До `LIVE_PREVIEW_MAX_WINDOWS_PER_CALL` окон подряд, пока не дойдём до живого края. Используется уже загруженная модель faster-whisper large-v3, та же стратегия языков, `vad_filter`, `hallucination_silence_threshold`.
-3. Слово новое, если его конец позже `committed_until`. Первое слово, пересекающее границу и совпадающее с одним из трёх последних зафиксированных, — это повтор из overlap, он отбрасывается. То же слово, сказанное позже, сохраняется.
-4. Фиксируются слова, кончающиеся до `край − LIVE_PREVIEW_GUARD_SECONDS` (у живого края) или до `конец окна − overlap` (при отставании). Через паузу позиция переходит только по участку, который энергетический VAD считает тишиной: речь, для которой модель не выдала слов, остаётся следующему окну.
-5. Сегменты с `no_speech_prob > LIVE_PREVIEW_NO_SPEECH_PROB` и сегменты, целиком состоящие из известных фраз-галлюцинаций Whisper, отбрасываются.
-6. Реплика закрывается по паузе > `LIVE_PREVIEW_UTTERANCE_GAP_SECONDS` или по концу предложения.
+1. FFmpeg декодирует снимок (первые `stable_bytes`) в 16 kHz mono (`-err_detect ignore_err`). Декодируется весь префикс, но распознаётся только новое аудио.
+2. Модель: слот `live_asr` (`LIVE_ASR_MODEL_PATH`, например large-v3-turbo), если он задан. Иначе явно используется слот `asr` (large-v3 финальной обработки). Заданная, но отсутствующая live-модель даёт `MODEL_UNAVAILABLE` (`model=live_asr`) без подмены. Модель загружается один раз на процесс.
+3. Окно `[q, q + LIVE_PREVIEW_WINDOW_SECONDS]`, где `q` — самая тихая 20-мс точка около `committed_until − LIVE_PREVIEW_CONTEXT_SECONDS`, но не позже `committed_until`. Хвост короче `LIVE_PREVIEW_MIN_NEW_SECONDS` присоединяется к последнему окну. До `LIVE_PREVIEW_MAX_WINDOWS_PER_CALL` окон за вызов, после **каждого** — `on_update`.
+4. Язык. Язык встречи `ru`/`kk` передаётся как есть и никогда не переопределяется. `auto`: окно кодируется энкодером один раз, язык выбирается среди `ASR_ALLOWED_LANGUAGES` по этому выходу, декодер получает тот же выход. Штатный auto-режим faster-whisper кодирует окно дважды. Перевода нет: `task=transcribe`.
+5. Окно без речи (Silero VAD, тот же, что внутри transcribe) пропускается без вызова ASR.
+6. «Дыры»: если на озвученном (по энергии) участке ≥ `LIVE_PREVIEW_HOLE_MIN_SECONDS` модель не вернула слов, участок распознаётся отдельно со своим языком (в `auto`), не больше `LIVE_PREVIEW_MAX_HOLES_PER_WINDOW` на окно. Так не теряется казахская фраза внутри «русского» окна.
+7. Слово новое, если его конец позже `committed_until`. Первое слово, пересекающее границу и совпадающее с одним из трёх последних зафиксированных, — повтор из перекрытия, отбрасывается. То же слово, сказанное позже, сохраняется.
+8. Фиксируются слова, кончающиеся до `край − LIVE_PREVIEW_GUARD_SECONDS` (у живого края) или до `конец окна − LIVE_PREVIEW_OVERLAP_SECONDS` (backlog). Через паузу позиция переходит только по тишине энергетического VAD: речь без слов остаётся следующему окну.
+9. Сегменты с `no_speech_prob > LIVE_PREVIEW_NO_SPEECH_PROB` отбрасываются. **Чёрного списка фраз нет**: настоящие «Спасибо за внимание», «Продолжение следует» не удаляются.
+10. Реплика закрывается по паузе > `LIVE_PREVIEW_UTTERANCE_GAP_SECONDS` или по концу предложения.
+
+LLM в live-пути не вызывается.
 
 ## Env (переносит backend в `.env.example`)
 
-| Переменная | Дефолт | Смысл |
-| --- | --- | --- |
-| `LIVE_PREVIEW_WINDOW_SECONDS` | `24` | Окно ASR. 12 с на CPU M4 Pro не успевает (лаг растёт до ~48 с), см. `docs/AI_SETUP.md` §10 |
-| `LIVE_PREVIEW_OVERLAP_SECONDS` | `1.5` | Перекрытие окон |
-| `LIVE_PREVIEW_GUARD_SECONDS` | `1.5` | Хвост у живого края остаётся черновым |
-| `LIVE_PREVIEW_MIN_NEW_SECONDS` | `3` | Меньше нового аудио — `waiting` |
-| `LIVE_PREVIEW_MAX_WINDOWS_PER_CALL` | `3` | Ограничение длительности одного вызова |
-| `LIVE_PREVIEW_UTTERANCE_GAP_SECONDS` | `1.0` | Пауза, закрывающая реплику |
-| `LIVE_PREVIEW_MAX_UTTERANCE_SECONDS` | `20` | Длинная реплика режется на конце предложения |
-| `LIVE_PREVIEW_NO_SPEECH_PROB` | `0.6` | Порог отбрасывания сегмента |
-| `LIVE_PREVIEW_HALLUCINATION_SILENCE_SECONDS` | `1.0` | `hallucination_silence_threshold` faster-whisper; `0` — выключить |
-| `LIVE_PREVIEW_BEAM_SIZE` | пусто = `ASR_BEAM_SIZE` | `1` почти не ускоряет и ухудшает текст (измерено) |
-| `LIVE_PREVIEW_REFINE_LANGUAGES` | = `ASR_REFINE_LANGUAGES` | Переопределение языка по сегментам. Измерения в `docs/AI_SETUP.md` §10 |
+Все читаются через `os.environ` в `app/live_ai.py` / `app/ml.py`, `config.py` не меняется. Пустое или нечисловое значение означает дефолт.
 
-Пустое или нечисловое значение означает дефолт. Используются также `ASR_*` (язык, VAD, разрешённые языки).
+| Переменная | Дефолт в коде | Рекомендуется (M4 Pro, измерено) | Смысл |
+| --- | --- | --- | --- |
+| `LIVE_ASR_MODEL_PATH` | пусто = слот `asr` (large-v3) | `faster-whisper-large-v3-turbo` | Live-модель; абсолютный путь или относительно `MODELS_DIR`. Готовится `prepare_models.py --only live_asr` |
+| `LIVE_ASR_MODEL_ID` | имя каталога | — | Для `models_status()` |
+| `LIVE_ASR_COMPUTE_TYPE` | = `ASR_COMPUTE_TYPE` | `int8` | |
+| `LIVE_ASR_DEVICE` | = `ASR_DEVICE` | `cpu` | |
+| `LIVE_ASR_CPU_THREADS` | = `ASR_CPU_THREADS` | `8` | 8 потоков: окно turbo 5.2 → 3.2 с; 12 не быстрее. В Docker нужно ≥ 8 CPU |
+| `LIVE_PREVIEW_WINDOW_SECONDS` | `12` | `12` | Максимум окна. Стоимость окна почти постоянна (энкодер 30 с), окно ограничивает только backlog; 8 с не быстрее |
+| `LIVE_PREVIEW_OVERLAP_SECONDS` | `1.5` | | Не фиксируемый хвост backlog-окна |
+| `LIVE_PREVIEW_CONTEXT_SECONDS` | `0.5` | | Аудио перед зафиксированной точкой в начале окна |
+| `LIVE_PREVIEW_GUARD_SECONDS` | `1.5` | | Хвост у живого края остаётся черновым |
+| `LIVE_PREVIEW_MIN_NEW_SECONDS` | `3` | | Меньше нового аудио — `waiting`; порог `has_pending_audio` |
+| `LIVE_PREVIEW_MAX_WINDOWS_PER_CALL` | `4` | | Окон за вызов (каждое публикуется) |
+| `LIVE_PREVIEW_BUSY_RETRY_MS` | `1000` | | `retry_after_ms` при занятом `compute_lock` |
+| `LIVE_PREVIEW_RESTRICT_LANGUAGES` | `true` | | `auto`: язык окна только из `ASR_ALLOWED_LANGUAGES`, один проход энкодера |
+| `LIVE_PREVIEW_HOLE_MIN_SECONDS` | `0.8` | | Минимальная озвученная «дыра» для повторного распознавания |
+| `LIVE_PREVIEW_MAX_HOLES_PER_WINDOW` | `2` | | `0` — выключить |
+| `LIVE_PREVIEW_UTTERANCE_GAP_SECONDS` | `1.0` | | Пауза, закрывающая реплику |
+| `LIVE_PREVIEW_MAX_UTTERANCE_SECONDS` | `20` | | Длинная реплика режется на конце предложения |
+| `LIVE_PREVIEW_NO_SPEECH_PROB` | `0.6` | | Порог отбрасывания сегмента |
+| `LIVE_PREVIEW_HALLUCINATION_SILENCE_SECONDS` | `1.0` | | `hallucination_silence_threshold`; `0` — выключить |
+| `LIVE_PREVIEW_BEAM_SIZE` | пусто = `ASR_BEAM_SIZE` | пусто (5) | beam 1 на turbo не дал ускорения (3.3 vs 3.2 с/окно, энкодер доминирует) |
+| `LIVE_PREVIEW_REFINE_LANGUAGES` | `false` | `false` | Переопределение языка по сегментам (дорого, отключает п.4) |
+
+Финальная обработка этих переменных не читает: `ASR_*` и слот `asr` (large-v3) не меняются.
+
+## Что нужно от backend (1.1)
+
+1. Передавать `on_update`: сохранять `result.to_dict()` в `preview_state`, реплики, `processed_until_seconds`, увеличивать `revision`. Ошибки сохранения поднимать как есть: AI их не перехватывает.
+2. После вызова: `has_pending_audio` → вызвать снова сразу, даже без новых байт. `retry_after_ms` → повтор через это время (≤ `LIVE_PREVIEW_RETRY_MAX_MS`). Иначе ждать новые байты. Сейчас `_preview_loop` выходит при `stable − preview_bytes < min_new_bytes`, и backlog без новых чанков не дорабатывается.
+3. Передавать снимок-префикс контейнера, никогда отдельный чанк.
+4. Прогревать `live_asr` на старте, если `LIVE_ASR_MODEL_PATH` задан (`get_registry().get("live_asr")`), и показывать `models_status()["live_asr"]` (`not_configured` | `ready` | `error`).
+5. Перенести env из таблицы в `.env.example`; в Docker выделить ≥ 8 CPU.

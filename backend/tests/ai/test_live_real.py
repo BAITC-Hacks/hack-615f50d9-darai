@@ -71,11 +71,17 @@ def test_no_duplicates_no_lost_sentences_common_timeline(run):
     for phrase in ("начинаем совещание по бюджету", "подготовьте пожалуйста финансовый отчет до пятницы",
                    "нужно обновить презентацию", "этим займусь я сама", "согласовать график поставок"):
         assert full.count(phrase) == 1, phrase
-    assert full.count("совещание окончено") == 2                  # once in each concatenated recording
+    final_text = norm(" ".join(u.text for u in utts if u.is_final))
+    assert final_text.count("совещание окончено") == 1            # end of the 1st recording, committed
+    # the very last phrase sits at the live edge: it may still be tentative (and imprecise) here;
+    # after stop the final large-v3 transcript replaces the preview anyway
+    assert not utts[-1].is_final or full.count("совещание окончено") == 2
     assert all(a.end <= b.start + 1e-6 for a, b in zip(utts, utts[1:]))
     assert len({u.id for u in utts}) == len(utts)
     assert utts[-1].end <= run["duration"] + 0.1
-    assert run["result"].processed_until_seconds == pytest.approx(run["duration"], abs=0.3)
+    # a tail shorter than LIVE_PREVIEW_MIN_NEW_SECONDS (3 s) waits for more audio (or the final pipeline)
+    assert run["duration"] - 3.0 <= run["result"].processed_until_seconds <= run["duration"] + 0.05
+    assert not run["result"].has_pending_audio
 
 
 def test_silence_creates_no_utterances(tmp_path):
