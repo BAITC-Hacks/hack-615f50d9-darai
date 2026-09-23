@@ -462,3 +462,28 @@ def test_hole_is_redecoded_and_words_are_merged(tmp_path, monkeypatch, webm):
     r = transcribe_preview(req(p, n, tmp_path), registry=reg)
     assert any(kw.get("vad_filter") is False for kw in reg.model.kwargs)
     assert r.utterances and all(a.end <= b.start + 1e-6 for a, b in zip(r.utterances, r.utterances[1:]))
+
+
+def test_long_meeting_decodes_only_the_tail_on_the_common_timeline(tmp_path, monkeypatch):
+    small_windows(monkeypatch, window=12, max_windows=40)
+    long = tmp_path / "long.webm"
+    subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-stream_loop", "3", "-i",
+                    str(FIX / "meeting_ru_kk.wav"), "-c:a", "libopus", "-b:a", "32k", "-cluster_time_limit", "1000",
+                    "-f", "webm", str(long)], check=True)
+    data = long.read_bytes()
+    first = tmp_path / "first.webm"
+    first.write_bytes(data[:int(len(data) * 0.7)])
+
+    def run(margin):
+        monkeypatch.setenv("LIVE_PREVIEW_TAIL_DECODE_MARGIN_SECONDS", str(margin))
+        reg = Reg()
+        r = transcribe_preview(req(first, first.stat().st_size, tmp_path), registry=reg)
+        r = transcribe_preview(req(long, len(data), tmp_path, r), registry=reg)
+        return r, reg.model.calls
+
+    tail, tail_calls = run(30)
+    full, full_calls = run(0)
+    assert tail.decoded_seconds == pytest.approx(full.decoded_seconds, abs=0.1)
+    assert tail.processed_until_seconds == pytest.approx(full.processed_until_seconds, abs=0.1)
+    assert len(tail_calls) == len(full_calls)
+    assert [round(u.start) for u in tail.utterances] == [round(u.start) for u in full.utterances]
