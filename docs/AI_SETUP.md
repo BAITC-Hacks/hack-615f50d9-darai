@@ -1,0 +1,171 @@
+# DARAI — подготовка и проверка локального AI
+
+Проверено 2026-09-23 на Apple M4 Pro (14 CPU, 48 GB RAM, macOS 26.6.2, arm64), Python 3.11.15 venv `backend/.venv`. Команды ниже запускались именно в таком виде. Что не проверено — в разделе «Не проверено».
+
+## 1. Оборудование и режим вычислений
+
+| Компонент | Устройство | Почему |
+| --- | --- | --- |
+| faster-whisper (CTranslate2 4.8.2) | CPU, `ASR_COMPUTE_TYPE=int8` | У CTranslate2 нет Metal-бэкенда, CUDA на Mac нет |
+| pyannote / WeSpeaker (torch 2.5.1) | CPU (`TORCH_DEVICE=cpu`) | MPS доступен на хосте, но в Docker Desktop на macOS его нет; MPS с pyannote не проверялся |
+| LLM | Ollama на хосте (Metal) | Контейнер `ollama` на macOS работает только на CPU |
+
+GPU-ускорение не обещаем: на Linux с NVIDIA можно поставить `ASR_DEVICE=cuda`, `ASR_COMPUTE_TYPE=float16`, `TORCH_DEVICE=cuda` и CUDA-колёса torch (`TORCH_INDEX_URL`), но это не проверялось.
+
+## 2. Модели, ревизии, размеры
+
+| Модель | Репозиторий @ revision | Путь в `MODELS_DIR` | Размер | Доступ |
+| --- | --- | --- | --- | --- |
+| ASR | `Systran/faster-whisper-large-v3@edaa852ec7e145841d8ffdb056a99866b5f0a478` | `faster-whisper-large-v3/` | 2.9 GB | открыт |
+| Голосовые векторы | `pyannote/wespeaker-voxceleb-resnet34-LM@837717ddb9ff5507820346191109dc79c958d614` | `pyannote/wespeaker-voxceleb-resnet34-LM/` | 25 MB | открыт |
+| Сегментация | `pyannote/segmentation-3.0@e66f3d3b9eb0873085418a7b813d3b369bf160bb` | `pyannote/segmentation-3.0/` | 6 MB | **gated** |
+| Диаризация (конфиг) | `pyannote/speaker-diarization-3.1@84fd25912480287da0247647c3d2b4853cb3ee5d` | `pyannote/speaker-diarization-3.1/config.yaml` | <1 MB | **gated** |
+| LLM | Ollama `qwen3:8b` (digest `500a1f067a9f`) | `~/.ollama` или `models/ollama` | 5.2 GB | открыт |
+
+Итого около 8.2 GB. Скрипт подготовки требует свободного места не меньше размера × 1.2 + 2 GB. Диаризация собирается в `app/ml.py` из локальных чекпойнтов: сегментация и **тот же объект** WeSpeaker, что для профилей. Из `config.yaml` берутся только гиперпараметры, ID моделей на Hub в рантайме не нужны.
+
+Память процесса (измерено, пиковый RSS): WeSpeaker 0.44 GB; вместе с ASR large-v3 int8 3.05 GB, после прогона ASR 3.13 GB. Диаризация не измерялась, веса сегментации 6 MB. `qwen3:8b` Q4 в Ollama занимает около 5.2 GB весов в unified memory (по размеру модели, RSS runner на Metal не показателен). Рекомендация: ≥ 16 GB RAM на хосте, Docker Desktop ≥ 6 GB.
+
+## 3. Подготовка (однократно, с интернетом)
+
+```bash
+# из корня репозитория, venv backend (uv): python 3.11
+cd backend && uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python \
+    -r requirements.txt -r requirements-ml.txt -r requirements-dev.txt && cd ..
+
+backend/.venv/bin/python scripts/ai/diagnose_env.py          # ОС, CPU/RAM/GPU, диск, версии, ffmpeg, ollama (без секретов)
+backend/.venv/bin/python scripts/ai/prepare_models.py --only asr,embedding   # проверено
+# gated-модели: принять условия на
+#   https://hf.co/pyannote/segmentation-3.0 и https://hf.co/pyannote/speaker-diarization-3.1
+HF_TOKEN=hf_xxx backend/.venv/bin/python scripts/ai/prepare_models.py --only segmentation,diarization
+ollama pull qwen3:8b                                           # проверено, Ollama 0.33.2
+```
+
+`prepare_models.py` скачивает только перечисленные файлы по закреплённым ревизиям, пишет `REVISION`, создаёт `models/.gitignore` (`*`) и удаляет кэш загрузки. `HF_TOKEN` нужен только этой команде; в `.env` и в образ он не попадает.
+
+## 4. Офлайн-проверка артефактов
+
+```bash
+cd backend
+MODELS_DIR=../models .venv/bin/python ../scripts/ai/check_models.py
+```
+
+Скрипт блокирует все не-loopback соединения и загружает каждую модель с `HF_HUB_OFFLINE=1`. Фактический вывод на этой машине:
+
+```
+[asr] files: OK  rev=Systran/faster-whisper-large-v3@edaa852e…
+[diarization] files: MISSING ../models/pyannote/speaker-diarization-3.1/config.yaml, ../models/pyannote/segmentation-3.0/pytorch_model.bin
+[embedding] files: OK  rev=pyannote/wespeaker-voxceleb-resnet34-LM@837717dd…
+[embedding] load: OK (2.9s, offline)
+[diarization] load: FAILED Не найден config.yaml диаризации: …
+[asr] load: OK (4.3s, offline)
+```
+
+## 5. Локальная LLM
+
+Проверено: Ollama 0.33.2 на хосте, `qwen3:8b`, endpoint `http://localhost:11434/v1`.
+
+**Отключение thinking различается по runtime, параметры не взаимозаменяемы.** Проверено запросами к `/v1/chat/completions`:
+
+| Параметр | Ollama 0.33.2 `/v1` | Результат |
+| --- | --- | --- |
+| без параметров | thinking включён | 5.8 с, поле `reasoning` заполнено |
+| `"think": false` | **игнорируется** | 2.6 с, `reasoning` заполнено |
+| `"reasoning_effort": "none"` | работает | 0.37 с, `reasoning` пустое |
+
+`LLM_THINKING_CONTROL=ollama` (по умолчанию) отправляет `reasoning_effort: "none"`, `vllm` — `chat_template_kwargs: {"enable_thinking": false}` (для vLLM не проверено), `off` — ничего. `llama3.1:8b` принимает `reasoning_effort` без ошибки.
+
+Выбор модели проверен реальным тестом `test_real_llm_extraction`: RU и KZ реплики, самоназначение, поручение без исполнителя, инъекция в транскрипте.
+
+| Модель | Время | Результат |
+| --- | --- | --- |
+| `qwen3:8b` | 18–22 с | ✅ «до пятницы» → 2026-09-25 (встреча в среду 23-го), самоназначение, поручение без исполнителя с `assignee=null`, инъекция проигнорирована |
+| `llama3.1:8b` | 8–16 с | ❌ «до пятницы» → 2026-09-30, поручение без исполнителя пропущено |
+
+**Рекомендация: `LLM_MODEL=qwen3:8b`** (внесено в `.env.example`). Модели `*:cloud` клиент отклоняет (`LLM_FORBIDDEN_ENDPOINT`).
+
+## 6. Env AI-части
+
+Уже в `config.py` / `.env.example`: `MODELS_DIR`, `ASR_*`, `DIARIZATION_CONFIG_PATH`, `SEGMENTATION_MODEL_PATH`, `EMBEDDING_MODEL_PATH`, `TORCH_DEVICE`, `VOICE_*`, `ALIGN_*`, `LLM_*`, `LLM_THINKING_CONTROL`, `TASK_LOW_CONFIDENCE`.
+
+Новые переменные читаются через `os.environ` в AI-модулях. Backend переносит их в `.env.example` (в `config.py` по желанию):
+
+| Переменная | Дефолт | Назначение |
+| --- | --- | --- |
+| `ASR_MULTILINGUAL` | `true` | Разрешает переопределение языка (при `ASR_LANGUAGE` пустом) |
+| `ASR_REFINE_LANGUAGES` | `true` | Язык каждого VAD-сегмента определяется заново среди `ASR_ALLOWED_LANGUAGES`, сегмент перераспознаётся при несовпадении. Нужно для RU/KZ-совещаний; стоит около ×1.8 времени ASR |
+| `ASR_ALLOWED_LANGUAGES` | `ru,kk,en` | Разрешённые языки при переопределении |
+| `ASR_LANGUAGE_MIN_PROB` | `0.5` | Минимальная вероятность (перенормированная по разрешённым языкам) |
+| `ASR_VAD_FILTER` | `true` | Silero VAD внутри faster-whisper, снижает галлюцинации на тишине |
+| `DIARIZATION_MAX_SPEAKERS` | пусто | Необязательная верхняя граница числа спикеров |
+| `VOICE_CLIPPING_REVIEW_RATIO` | `0.001` | Доля клиппинга в образце → `needs_review` |
+| `VOICE_CLIPPING_REJECT_RATIO` | `0.02` | Доля клиппинга → отклонение образца |
+
+`.env.example` обновлён backend-агентом: `LLM_MODEL=qwen3:8b`, новые переменные выше. Пустое значение любой из них (или нечисловое) означает дефолт; `DIARIZATION_MAX_SPEAKERS=` — без ограничения.
+
+Compose (сделано backend-агентом, проверено по файлам, но не запуском): `./models:/models:ro`, `MODELS_DIR=/models`, сеть без egress. На macOS использовать `docker-compose.host-llm.yml` (Ollama на хосте с Metal, `LLM_BASE_URL=http://host.docker.internal:11434/v1`; адрес Docker Desktop приватный, проверка endpoint его пропускает).
+
+## 7. Тесты и smoke
+
+```bash
+cd backend
+.venv/bin/python -m pytest tests/ai -m "not real_models and not real_llm"   # детерминированные, без моделей
+MODELS_DIR=../models ASR_COMPUTE_TYPE=int8 LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen3:8b \
+  .venv/bin/python -m pytest tests/ai/test_real_models.py -s                # реальные веса и LLM
+MODELS_DIR=../models ASR_COMPUTE_TYPE=int8 LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen3:8b \
+  .venv/bin/python ../scripts/ai/smoke.py tests/fixtures/ai/meeting_ru_kk.wav \
+    --enroll "Иванова Анна=tests/fixtures/ai/enroll_ru_milena.wav" \
+    --enroll "Ахметова Дана=tests/fixtures/ai/enroll_kk_aru.wav" --date 2026-09-23T10:00 --tz Asia/Almaty
+python3 ../scripts/ai/make_fixtures.py    # пересоздать фикстуры (macOS say + ffmpeg)
+```
+
+Фикстуры в `backend/tests/fixtures/ai/` **смоделированы** голосами macOS TTS (Milena ru_RU, Aru kk_KZ, Milena с поднятым тоном как незарегистрированный голос). Это не живые люди. Образцы для регистрации и записи совещания содержат разный текст. `manifest.json` хранит эталонный текст, язык и интервалы.
+
+## 8. Измерения (реальные веса, CPU M4 Pro)
+
+| Операция | Аудио | Время |
+| --- | --- | --- |
+| Загрузка ASR large-v3 int8 | — | 4.1–4.3 с |
+| Загрузка WeSpeaker | — | 2–3 с |
+| ASR без переопределения языка | 31.4 с | 28–31 с (≈ ×1.0 реального времени; `ASR_CPU_THREADS=10` не ускорил) |
+| ASR с переопределением языка | 31.4 с | 73–88 с (≈ ×2.5) |
+| ASR, казахский | 8.3 с | 15 с (25 с с переопределением) |
+| Регистрация голоса | 21–23 с | 0.2–2.4 с |
+| Векторы спикеров | 31.4 с | 0.2 с |
+| LLM: поручения + саммари, `qwen3:8b` | 7–8 реплик | 18–22 с |
+
+Для записи 30 мин ожидаем ≈ 75 мин ASR с переопределением языка или ≈ 30 мин без него. Это главное ограничение CPU-режима. Варианты: GPU-хост; `ASR_REFINE_LANGUAGES=false` для одноязычных встреч; `large-v3-turbo`. Последнее — это замена модели, её надо согласовать и проверить на KZ.
+
+Качество ASR на фикстурах (CER — доля ошибочных символов):
+
+| Фрагмент | Без переопределения | С переопределением |
+| --- | --- | --- |
+| RU-реплики | 0.00 | 0.00 |
+| KZ-реплика внутри RU-совещания | транслитерация русскими буквами («Салеметсиздерми…») | **0.00**, определена как `kk` |
+| Смешанная реплика «финансовый отчётты жұмаға дейін» | «финансовый отчет жумага дейн…» | 0.15 («Синан Софи өтчу ұтты…») |
+| Короткая KZ-реплика 1.9 с «Презентацияны кім жасайды?» | «тымжасайды» | 0.09, осталась `ru` |
+| Отдельный KZ-файл | 0.02 | 0.02 |
+| Смешанный файл (KZ + русские слова) | 0.04 | 0.04 |
+
+Причина: `multilingual=True` в faster-whisper 1.1.1 определяет язык по 30-секундному окну, а не по реплике. Поэтому добавлено переопределение по сегментам. Переключение языка внутри одной реплики модель по-прежнему передаёт плохо.
+
+Голосовые векторы (WeSpeaker, интервалы спикеров из эталона, без диаризации):
+
+| Случай | similarity / 2-й | Решение |
+| --- | --- | --- |
+| Анна (регистрация: другой текст) | 0.966 / 0.454 | Анна |
+| Дана | 0.943 / 0.390 | Дана |
+| Незарегистрированный голос | 0.409 / 0.245 | Неизвестный (`below_threshold`) |
+| Один кандидат, чужой голос | 0.390 | Неизвестный |
+| Образец 2.3 с | — | отклонён `too_short` |
+| Тишина | — | отклонён `silence` |
+
+У синтетических голосов разброс меньше, чем у живых. Пороги 0.55 / 0.08 надо калибровать на реальных записях.
+
+## 9. Не проверено / блокеры
+
+1. **Диаризация pyannote 3.1 не запускалась**: gated-веса не скачаны, `HF_TOKEN` нет. Сборка пайплайна в `ml.py` из локальных `Model`, этап `diarizing`, overlap на реальной модели, полный `process_recording` и `test_full_process_recording` / `test_diarization_overlap_fixture` в итоге пропущены с явной причиной. Нужно принять условия и выполнить команду из §3, затем `check_models.py` и `pytest tests/ai/test_real_models.py`.
+2. Живые записи RU/KZ/смешанной речи разных людей с согласием отсутствуют. Для калибровки порогов и оценки качества нужны 3–5 человек: образец голоса 20–30 с и отдельная запись совещания 3–5 мин с эталонной разметкой.
+3. Docker (python:3.11-slim, linux/arm64, CPU-колёса torch): backend-агент собрал образ с этим `requirements-ml.txt`, `pip check` чистый, импорты `app.ai_pipeline`/pyannote/faster-whisper работают, 78 тестов без моделей (`tests/api` + `tests/ai`) проходят внутри образа. Модели и LLM в контейнере не запускались.
+4. MPS для pyannote, CUDA и vLLM не проверялись.
+5. На этой машине свободно около 11 GB диска (на старте было 24 GB, место уходило параллельно). Этого хватает на gated-модели (≈ 10 MB), но мало для дополнительных LLM или образов.

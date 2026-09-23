@@ -1,0 +1,158 @@
+{
+  "note": "SIMULATED TTS voices (macOS Milena ru_RU, Aru kk_KZ); not real speakers",
+  "speakers": {
+    "Milena": "anna",
+    "Aru": "dana",
+    "Milena+pitch": "guest"
+  },
+  "enroll": {
+    "enroll_ru_milena": {
+      "file": "enroll_ru_milena.wav",
+      "speaker": "anna",
+      "duration": 23.517
+    },
+    "enroll_kk_aru": {
+      "file": "enroll_kk_aru.wav",
+      "speaker": "dana",
+      "duration": 21.686
+    },
+    "enroll_short": {
+      "file": "enroll_short.wav",
+      "speaker": "anna",
+      "duration": 2.34
+    }
+  },
+  "recordings": {
+    "meeting_ru_kk": {
+      "file": "meeting_ru_kk.wav",
+      "turns": [
+        {
+          "speaker": "anna",
+          "lang": "ru",
+          "text": "Коллеги, начинаем совещание по бюджету на следующий квартал.",
+          "start": 0.5,
+          "end": 4.43
+        },
+        {
+          "speaker": "dana",
+          "lang": "kk",
+          "text": "Сәлеметсіздер ме. Мен алдын ала есепті дайындап қойдым.",
+          "start": 4.93,
+          "end": 8.731
+        },
+        {
+          "speaker": "anna",
+          "lang": "ru",
+          "text": "Дана, подготовьте, пожалуйста, финансовый отчёт до пятницы.",
+          "start": 9.231,
+          "end": 13.637
+        },
+        {
+          "speaker": "dana",
+          "lang": "mixed",
+          "text": "Жарайды, финансовый отчётты жұмаға дейін дайындаймын.",
+          "start": 14.137,
+          "end": 18.002
+        },
+        {
+          "speaker": "anna",
+          "lang": "ru",
+          "text": "Также нужно обновить презентацию для совета директоров.",
+          "start": 18.502,
+          "end": 21.79
+        },
+        {
+          "speaker": "dana",
+          "lang": "kk",
+          "text": "Презентацияны кім жасайды?",
+          "start": 22.29,
+          "end": 24.232
+        },
+        {
+          "speaker": "anna",
+          "lang": "ru",
+          "text": "Этим займусь я сама, срок пока не определён.",
+          "start": 24.732,
+          "end": 27.797
+        },
+        {
+          "speaker": "anna",
+          "lang": "ru",
+          "text": "Всем спасибо, совещание окончено.",
+          "start": 28.297,
+          "end": 30.88
+        }
+      ],
+      "duration": 31.38
+    },
+    "kk_only": {
+      "file": "kk_only.wav",
+      "turns": [
+        {
+          "speaker": "dana",
+          "lang": "kk",
+          "text": "Бүгінгі жиналыста біз жаңа жобаның жоспарын талқыладық.",
+          "start": 0.5,
+          "end": 4.41
+        },
+        {
+          "speaker": "dana",
+          "lang": "kk",
+          "text": "Ертеңге дейін барлық құжаттарды жинау керек.",
+          "start": 4.91,
+          "end": 7.772
+        }
+      ],
+      "duration": 8.273
+    },
+    "mixed": {
+      "file": "mixed.wav",
+      "turns": [
+        {
+          "speaker": "dana",
+          "lang": "mixed",
+          "text": "Коллеги, келесі аптада дедлайн бар, отчётты уақытында тапсыру керек.",
+          "start": 0.5,
+          "end": 5.501
+        },
+        {
+          "speaker": "dana",
+          "lang": "mixed",
+          "text": "Бюджет бойынша презентацияны понедельникке дейін жіберіңіздер.",
+          "start": 6.001,
+          "end": 10.086
+        }
+      ],
+      "duration": 10.586
+    },
+    "unknown_voice": {
+      "file": "unknown_voice.wav",
+      "turns": [
+        {
+          "speaker": "guest",
+          "lang": "ru",
+          "text": "Добрый день, я сегодня здесь как приглашённый эксперт по закупкам.",
+          "start": 0.5,
+          "end": 3.941
+        },
+        {
+          "speaker": "guest",
+          "lang": "ru",
+          "text": "Предлагаю вернуться к вопросу поставщиков на следующей неделе.",
+          "start": 4.441,
+          "end": 7.475
+        }
+      ],
+      "duration": 7.975
+    },
+    "overlap": {
+      "file": "overlap.wav",
+      "overlap_start": 2.669,
+      "overlap_end": 5.338
+    },
+    "silence": {
+      "file": "silence.wav",
+      "duration": 5.0
+    }
+  }
+}

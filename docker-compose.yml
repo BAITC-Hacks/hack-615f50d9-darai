@@ -1,0 +1,85 @@
+# DARAI: prepared-environment launch with `docker compose up`.
+# Preparation (images, model weights, LLM pull) is a separate documented step:
+# see docs/BACKEND.md. Nothing is downloaded at runtime.
+#
+# Network isolation: db, backend and ollama live only on the `internal`
+# network (no egress). Only the frontend is published; it proxies /api to
+# backend:8000 and strips the /api prefix.
+
+name: darai
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.0-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-darai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-darai}
+      POSTGRES_DB: ${POSTGRES_DB:-darai}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        INSTALL_ML: ${INSTALL_ML:-true}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    image: darai-backend:local
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-darai}:${POSTGRES_PASSWORD:-darai}@db:5432/${POSTGRES_DB:-darai}
+      DATA_DIR: /data
+      MODELS_DIR: /models
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL: ${LLM_MODEL:?set LLM_MODEL in .env (see .env.example)}
+    volumes:
+      - darai-data:/data
+      - ${MODELS_HOST_DIR:-./models}:/models:ro
+    networks: [internal]
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKEND_MEMORY_LIMIT:-16g}
+
+  ollama:
+    image: ollama/ollama:0.33.2
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NOPRUNE: "1"
+      OLLAMA_KEEP_ALIVE: 30m
+    volumes:
+      - ${OLLAMA_HOST_DIR:-./models/ollama}:/root/.ollama
+    networks: [internal]
+
+  frontend:
+    build: ./frontend
+    image: darai-frontend:local
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
+    networks: [internal, edge]
+    depends_on:
+      - backend
+
+networks:
+  internal:
+    internal: true
+  edge: {}
+
+volumes:
+  pgdata:
+  darai-data:

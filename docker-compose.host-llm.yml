@@ -1,0 +1,19 @@
+# Optional override: use an LLM runtime running on the Docker host (e.g. Ollama
+# with Metal on macOS) instead of the `ollama` container.
+#   docker compose -f docker-compose.yml -f docker-compose.host-llm.yml up
+# NOTE: this gives the backend a bridge network with a route to the host, i.e.
+# it is no longer egress-isolated by Docker; restrict egress with the host
+# firewall if required. The backend still refuses non-private LLM addresses
+# and Ollama ":cloud" models.
+services:
+  backend:
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [internal, hostllm]
+  ollama:
+    profiles: ["disabled"]
+
+networks:
+  hostllm: {}

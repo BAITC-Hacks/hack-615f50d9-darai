@@ -1,0 +1,17 @@
+# Local speech models. Installed into the image at build time only.
+# Verified together on Python 3.11 (macOS arm64 venv, 2026-09-23); see docs/AI_SETUP.md.
+# torch/torchaudio versions must match pyannote.audio 3.3.x requirements.
+torch==2.5.1
+torchaudio==2.5.1
+pyannote.audio==3.3.2
+pyannote.core==5.0.0
+pyannote.pipeline==3.0.1
+faster-whisper==1.1.1
+ctranslate2==4.8.2
+# pyannote 3.3.2 has no upper bound; hub 1.x removed `use_auth_token`, which only
+# matters for Hub loading. DARAI loads every checkpoint from a local path, and the
+# download script calls hf_hub_download(token=...) directly: verified with 1.32.0.
+huggingface_hub==1.32.0
+lightning==2.6.6
+speechbrain==1.1.1
+PyYAML==6.0.3
