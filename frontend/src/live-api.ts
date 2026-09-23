@@ -5,6 +5,8 @@ export interface LiveSnapshot {
   next_sequence: number;
   received_bytes: number;
   processed_until_seconds: number;
+  received_audio_seconds?: number | null;
+  lag_seconds?: number | null;
   revision: number;
   preview_status: "waiting" | "processing" | "ready" | "unavailable";
   preview_error: { code: string; message: string } | null;

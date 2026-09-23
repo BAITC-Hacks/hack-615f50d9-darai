@@ -3,8 +3,10 @@ finalization runs through the existing recording path (TestAIAdapter)."""
 
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +15,7 @@ from typing import Callable
 import pytest
 
 from app import ai_types, live_service
+from app.config import get_settings
 from app.db import db_session
 
 from .conftest import create_meeting, upload
@@ -32,6 +35,11 @@ class LivePreviewUtterance:
 class LivePreviewResult:
     processed_until_seconds: float
     utterances: list
+    preview_status: str = "ready"
+    preview_error: dict | None = None
+    decoded_seconds: float = 0.0
+    has_pending_audio: bool = False
+    retry_after_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -44,34 +52,75 @@ class LivePreviewRequest:
     is_cancelled: Callable
     asr_language: str | None = None
     asr_profile: str | None = None
+    on_update: Callable | None = None
+
+
+def _utts(n: int) -> list:
+    return [LivePreviewUtterance(f"preview-{i}", float(i), float(i + 1), None, f"фраза {i}", i < n - 1)
+            for i in range(n)]
 
 
 class FakeLiveAI:
-    """TEST-ONLY stand-in for app.live_ai; never used at runtime."""
+    """TEST-ONLY stand-in for app.live_ai; never used at runtime.
+
+    Default: every call recognizes one more second. `script` (list of callables
+    req, n -> result) overrides calls one by one."""
 
     types = SimpleNamespace(LivePreviewUtterance=LivePreviewUtterance, LivePreviewResult=LivePreviewResult,
                             LivePreviewRequest=LivePreviewRequest)
 
     def __init__(self):
         self.requests = []
+        self.times = []
         self.fail = None
+        self.script: list = []
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
 
     def transcribe_preview(self, req):
-        data = Path(req.container_path).read_bytes()
-        self.requests.append((req, data))
-        if self.fail:
-            raise self.fail
-        n = len(self.requests)
-        return LivePreviewResult(processed_until_seconds=float(n),
-                                 utterances=[LivePreviewUtterance(f"preview-{i}", float(i), float(i + 1), None,
-                                                                  f"фраза {i}", i < n - 1) for i in range(n)])
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            data = Path(req.container_path).read_bytes()
+            self.requests.append((req, data))
+            self.times.append(time.monotonic())
+            if self.fail:
+                raise self.fail
+            n = len(self.requests)
+            if self.script:
+                return self.script.pop(0)(req, n)
+            return LivePreviewResult(processed_until_seconds=float(n), utterances=_utts(n), decoded_seconds=float(n))
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+def _wait(cond, timeout: float = 5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        v = cond()
+        if v:
+            return v
+        time.sleep(0.02)
+    raise AssertionError("condition not reached")
 
 
 @pytest.fixture
-def live_ai():
+def live_ai(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "live_preview_check_interval_ms", 50)
+    monkeypatch.setattr(settings, "live_preview_min_new_bytes", 1)
+    monkeypatch.setattr(settings, "live_preview_error_backoff_ms", 100)
     fake = FakeLiveAI()
     live_service.set_live_test_adapter(fake)
     yield fake
+    for sid in list(live_service._workers):
+        w = live_service._workers.get(sid)
+        live_service.stop_preview(sid)
+        if w is not None:
+            w.thread.join(5)
     live_service.set_live_test_adapter(None)
 
 
@@ -118,12 +167,20 @@ def test_full_live_flow(org, ai, live_ai, webm):
     r = _put(sec, m["id"], sid, len(parts) + 1, b"xx")
     assert r.json()["error"]["code"] == "CHUNK_OUT_OF_ORDER" and r.json()["error"]["details"]["next_sequence"] == len(parts)
 
-    snap = sec.get(f"/meetings/{m['id']}/live/{sid}").json()
+    def settled():
+        snap = sec.get(f"/meetings/{m['id']}/live/{sid}").json()
+        done = live_ai.requests and live_ai.requests[-1][0].stable_bytes == len(webm) and \
+            snap["preview_status"] == "ready" and snap["revision"] == len(live_ai.requests)
+        return snap if done else None
+
+    snap = _wait(settled)
     assert snap["received_bytes"] == len(webm) and snap["next_sequence"] == len(parts)
     # preview ran on stable prefixes of the SAME container, coalesced, never per chunk
-    assert live_ai.requests and all(webm.startswith(data) for _, data in live_ai.requests)
+    assert all(webm.startswith(data) for _, data in live_ai.requests)
     assert all(req.stable_bytes == len(data) for req, data in live_ai.requests)
-    assert snap["preview_status"] == "ready" and snap["revision"] == len(live_ai.requests)
+    assert len(live_ai.requests) <= len(parts) and live_ai.max_active == 1
+    n = len(live_ai.requests)
+    assert snap["received_audio_seconds"] == float(n) and snap["lag_seconds"] == 0.0
     assert snap["utterances"][0] == {"id": "preview-0", "start": 0.0, "end": 1.0, "speaker_label": None,
                                      "text": "фраза 0", "is_final": len(live_ai.requests) > 1}
     assert snap["draft_tasks"] == [] and snap["recording_id"] is None
@@ -200,7 +257,8 @@ def test_preview_failure_does_not_break_recording(org, ai, live_ai, webm):
     parts = _chunks(webm, 2)
     for i, p in enumerate(parts):
         assert _put(sec, m["id"], sid, i, p).status_code == 200
-    snap = sec.get(f"/meetings/{m['id']}/live/{sid}").json()
+    snap = _wait(lambda: (x := sec.get(f"/meetings/{m['id']}/live/{sid}").json())["preview_status"] == "unavailable"
+                 and x)
     assert snap["state"] == "recording" and snap["preview_status"] == "unavailable"
     assert snap["preview_error"]["code"] == "MODEL_UNAVAILABLE" and snap["error"] is None
     r = sec.post(f"/meetings/{m['id']}/live/{sid}/finish", json={"last_sequence": len(parts) - 1})
@@ -223,6 +281,8 @@ def test_restart_and_client_timeout_keep_data(org, ai, live_ai, webm):
     m2 = create_meeting(sec, [org["dana"]["id"]])
     sid2 = _start(sec, m2["id"])["session_id"]
     _put(sec, m2["id"], sid2, 0, webm[:3000])
+    # a publishing preview holds the row lock briefly; expire_idle skips locked rows until the next tick
+    _wait(lambda: sec.get(f"/meetings/{m2['id']}/live/{sid2}").json()["preview_status"] == "ready")
     with db_session() as db:
         assert live_service.expire_idle(db, datetime.now(timezone.utc) + timedelta(seconds=10)) == 0
         assert live_service.expire_idle(db, datetime.now(timezone.utc) + timedelta(seconds=500)) == 1

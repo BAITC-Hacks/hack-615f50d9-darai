@@ -1,3 +1,4 @@
+import type { LiveSnapshot } from "../../src/live-api";
 // Synthetic contract fixture. Imported only by Playwright; never bundled into production.
 import type { Page as BrowserPage } from "@playwright/test";
 import type {
@@ -57,6 +58,10 @@ export async function fixtureApi(
     liveFailures: 0,
     livePreviewError: false,
     liveRevision: 0,
+    liveSnapshots: [] as Partial<LiveSnapshot>[],
+    livePollFailures: 0,
+    livePollDelay: 0,
+    livePollTimes: [] as number[],
     liveState: "recording",
     accounts,
     employeeRoles: {} as Record<string, User["role"]>,
@@ -552,6 +557,19 @@ export async function fixtureApi(
             202,
           );
         }
+        state.livePollTimes.push(Date.now());
+        if (state.livePollDelay)
+          await new Promise((resolve) =>
+            setTimeout(resolve, state.livePollDelay),
+          );
+        if (state.livePollFailures > 0) {
+          state.livePollFailures--;
+          return fail(
+            503,
+            "PREVIEW_NETWORK",
+            "Тест: обновление временно недоступно",
+          );
+        }
         state.liveRevision++;
         if (state.liveState === "finalizing" && state.liveRevision > 1) {
           state.liveState = "done";
@@ -592,6 +610,11 @@ export async function fixtureApi(
           draft_tasks: [],
           recording_id: m.recording?.id || null,
           error: null,
+          ...(state.liveState === "recording" && state.liveSnapshots.length
+            ? state.liveSnapshots.length > 1
+              ? state.liveSnapshots.shift()
+              : state.liveSnapshots[0]
+            : {}),
         });
       }
 

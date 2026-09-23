@@ -58,6 +58,8 @@ class LiveSnapshotOut(BaseModel):
     next_sequence: int
     received_bytes: int
     processed_until_seconds: float
+    received_audio_seconds: float | None
+    lag_seconds: float | None
     revision: int
     preview_status: Literal["waiting", "processing", "ready", "unavailable"]
     preview_error: LiveError | None
@@ -119,7 +121,7 @@ def start_live(meeting_id: str, body: LiveStartIn, current: CurrentUser = Depend
                 "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},
                 "audio/webm": {"schema": {"type": "string", "format": "binary"}}}}})
 async def put_chunk(meeting_id: str, session_id: str, sequence: int, request: Request,
-                    background: BackgroundTasks, current: CurrentUser = Depends(get_current_user),
+                    current: CurrentUser = Depends(get_current_user),
                     db: Session = Depends(get_db)):
     limit = get_settings().live_max_chunk_bytes
     if sequence < 0:
@@ -140,9 +142,9 @@ async def put_chunk(meeting_id: str, session_id: str, sequence: int, request: Re
         s = live_service.get_session(db, meeting, session_id, lock=True)
         return live_service.put_chunk(db, s, sequence, bytes(body)), s.id
 
-    (out, schedule), sid = await run_in_threadpool(work)
-    if schedule:
-        background.add_task(live_service.run_preview, sid)
+    (out, wake), sid = await run_in_threadpool(work)
+    if wake:
+        live_service.kick(sid)  # one coalescing worker per session, not a task per chunk
     return out
 
 

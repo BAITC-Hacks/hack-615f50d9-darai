@@ -1,5 +1,5 @@
 from .conftest import create_meeting, upload
-from .test_live import live_ai, webm, _start, _put
+from .test_live import live_ai, webm, _start, _put, _wait
 
 
 def test_settings_access_persistence_and_pipeline(org, ai):
@@ -26,5 +26,5 @@ def test_live_uses_settings_and_locks_changes(org, live_ai, webm):
     sid = _start(sec, m["id"])["session_id"]
     assert sec.patch(route, json=body).status_code == 409
     assert _put(sec, m["id"], sid, 0, webm).status_code == 200
-    req = live_ai.requests[0][0]
+    req = _wait(lambda: live_ai.requests)[0][0]  # preview runs in its own worker thread
     assert req.asr_language == "ru" and req.asr_profile == "refined"

@@ -2823,6 +2823,28 @@
             "type": "number",
             "title": "Processed Until Seconds"
           },
+          "received_audio_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Audio Seconds"
+          },
+          "lag_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lag Seconds"
+          },
           "revision": {
             "type": "integer",
             "title": "Revision"
@@ -2891,6 +2913,8 @@
           "next_sequence",
           "received_bytes",
           "processed_until_seconds",
+          "received_audio_seconds",
+          "lag_seconds",
           "revision",
           "preview_status",
           "preview_error",

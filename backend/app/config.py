@@ -38,7 +38,12 @@ class Settings(BaseSettings):
     live_max_chunk_bytes: int = Field(5 * 1024 * 1024, ge=1024)
     live_idle_timeout_seconds: int = Field(120, ge=10)
     live_poll_after_ms: int = Field(2000, ge=250)
-    live_preview_min_new_bytes: int = Field(48000, ge=1)  # coalesce preview updates (~6 s of opus)
+    # Preview coalescing is time based: the worker looks at new bytes at most once per interval;
+    # whether there is enough speech for ASR is decided by the AI (LIVE_PREVIEW_MIN_NEW_SECONDS).
+    live_preview_check_interval_ms: int = Field(2000, ge=50)
+    live_preview_min_new_bytes: int = Field(1, ge=1)
+    live_preview_retry_max_ms: int = Field(30000, ge=100)  # cap for AI retry_after_ms
+    live_preview_error_backoff_ms: int = Field(10000, ge=0)  # after preview_status=unavailable
     live_preview_enabled: bool = True
 
     # --- jobs ---

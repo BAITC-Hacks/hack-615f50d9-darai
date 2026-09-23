@@ -51,6 +51,13 @@ class LivePreviewResult:
     state: LivePreviewState = field(default_factory=LivePreviewState)
     decoded_seconds: float = 0.0              # decodable audio in the snapshot
     asr_seconds: float = 0.0                  # ASR wall time spent in this call
+    # True: THIS snapshot still holds >= LIVE_PREVIEW_MIN_NEW_SECONDS of not yet transcribed
+    # audio; call again with the same snapshot (no new chunk needed). False on "waiting" for audio.
+    has_pending_audio: bool = False
+    # Set only when the model/compute lock is busy: retry the same call after this delay.
+    # Not set when there is simply not enough new audio.
+    retry_after_ms: int | None = None
+    asr_model: str | None = None              # registry slot used: "live_asr" | "asr" (diagnostics)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -70,7 +77,10 @@ class LivePreviewResult:
             utterances=[utt(x) for x in d.get("utterances", [])],
             preview_status=d.get("preview_status", "ready"), preview_error=d.get("preview_error"),
             draft_tasks=list(d.get("draft_tasks") or []), state=state,
-            decoded_seconds=float(d.get("decoded_seconds", 0.0)), asr_seconds=float(d.get("asr_seconds", 0.0)))
+            decoded_seconds=float(d.get("decoded_seconds", 0.0)), asr_seconds=float(d.get("asr_seconds", 0.0)),
+            has_pending_audio=bool(d.get("has_pending_audio", False)),
+            retry_after_ms=None if d.get("retry_after_ms") is None else int(d["retry_after_ms"]),
+            asr_model=d.get("asr_model"))
 
 
 def _never_cancelled() -> bool:
@@ -86,5 +96,9 @@ class LivePreviewRequest:
     work_dir: Path           # AI temp files; backend removes it with the session
     previous: LivePreviewResult | None = None
     is_cancelled: Callable[[], bool] = _never_cancelled
-    asr_language: str | None = None
+    asr_language: str | None = None    # meeting setting: "auto" | "ru" | "kk" | None (= ASR_LANGUAGE)
     asr_profile: str | None = None
+    # Called after EVERY transcribed window with a full snapshot (same shape as the return
+    # value, preview_status="ready"); the backend persists/publishes it. Exceptions raised
+    # here propagate out of transcribe_preview unchanged (they are not ASR errors).
+    on_update: Callable[[LivePreviewResult], None] | None = None

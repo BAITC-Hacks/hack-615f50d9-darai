@@ -1,19 +1,22 @@
 """Incremental transcript preview for a live MediaRecorder session.
 
 Each call:
-1. decodes the fixed snapshot of the accumulated container with FFmpeg (a
-   truncated last cluster is expected and not an error);
-2. transcribes only new audio, sequentially, in windows of
-   LIVE_PREVIEW_WINDOW_SECONDS starting LIVE_PREVIEW_OVERLAP_SECONDS before the
-   committed position, with the already loaded faster-whisper model;
-3. merges words by TIME: a word is new only if its midpoint lies after the
-   committed position, so the overlap is not duplicated while the same word
-   spoken later is kept;
-4. commits words that are safely inside the window; words near the live edge
-   stay tentative and are re-decoded by the next call.
+1. decodes the fixed snapshot (first ``stable_bytes``) of the accumulated container
+   with FFmpeg (a truncated last cluster is expected and not an error);
+2. transcribes only audio after the committed position, sequentially, in windows of
+   LIVE_PREVIEW_WINDOW_SECONDS starting LIVE_PREVIEW_CONTEXT_SECONDS before it (in a
+   pause), with the live model ("live_asr" if LIVE_ASR_MODEL_PATH is set, else "asr");
+   auto language = one encoder pass per window, language restricted to
+   ASR_ALLOWED_LANGUAGES; voiced audio the window decode dropped is re-decoded alone;
+3. merges words by TIME: a word is new only if it ends after the committed position,
+   so the overlap is not duplicated while the same word spoken later is kept;
+4. commits words that are safely inside the window; words near the live edge stay
+   tentative and are re-decoded by the next window;
+5. publishes a full snapshot through ``on_update`` after EVERY window and reports
+   ``has_pending_audio`` when the same snapshot still holds backlog.
 
 No diarization, no LLM, no DB: the protocol comes from
-ai_pipeline.process_recording on the full file after the session ends.
+ai_pipeline.process_recording (large-v3) on the full file after the session ends.
 Timing is reported honestly through processed_until_seconds/asr_seconds.
 """
 
@@ -30,7 +33,7 @@ import numpy as np
 
 from . import audio
 from .ai_types import AIError
-from .asr import env_bool, transcribe
+from .asr import env_bool, pick_language, transcribe
 from .config import get_settings
 from .live_ai_types import (
     LivePreviewRequest,
@@ -58,11 +61,14 @@ def _env_float(name: str, default: float) -> float:
 
 class LiveConfig:
     def __init__(self):
-        self.window = _env_float("LIVE_PREVIEW_WINDOW_SECONDS", 24.0)  # measured: 12 s cannot keep up on CPU
-        self.overlap = _env_float("LIVE_PREVIEW_OVERLAP_SECONDS", 1.5)
+        # Measured (docs/AI_SETUP.md §10): a window costs ~constant time (Whisper encodes a 30 s block),
+        # so the window only caps backlog; 12 s + per-window publication keeps up with turbo on CPU.
+        self.window = _env_float("LIVE_PREVIEW_WINDOW_SECONDS", 12.0)
+        self.overlap = _env_float("LIVE_PREVIEW_OVERLAP_SECONDS", 1.5)   # backlog window: tail left uncommitted
+        self.context = _env_float("LIVE_PREVIEW_CONTEXT_SECONDS", 0.5)   # audio before the committed point
         self.guard = _env_float("LIVE_PREVIEW_GUARD_SECONDS", 1.5)       # live-edge words stay tentative
         self.min_new = _env_float("LIVE_PREVIEW_MIN_NEW_SECONDS", 3.0)   # below this: "waiting"
-        self.max_windows = int(_env_float("LIVE_PREVIEW_MAX_WINDOWS_PER_CALL", 3))
+        self.max_windows = int(_env_float("LIVE_PREVIEW_MAX_WINDOWS_PER_CALL", 4))  # each one is published
         self.utterance_gap = _env_float("LIVE_PREVIEW_UTTERANCE_GAP_SECONDS", 1.0)
         self.max_utterance = _env_float("LIVE_PREVIEW_MAX_UTTERANCE_SECONDS", 20.0)
         self.no_speech_prob = _env_float("LIVE_PREVIEW_NO_SPEECH_PROB", 0.6)
@@ -71,6 +77,12 @@ class LiveConfig:
         # Per-segment language refinement: measured lag up to 87 s on CPU M4 Pro -> off for preview;
         # the final pipeline keeps ASR_REFINE_LANGUAGES.
         self.refine = env_bool("LIVE_PREVIEW_REFINE_LANGUAGES", False)
+        # auto language: pick the window language among ASR_ALLOWED_LANGUAGES (same cost as Whisper's own detection)
+        self.restrict_languages = env_bool("LIVE_PREVIEW_RESTRICT_LANGUAGES", True)
+        # voiced audio without words is re-decoded on its own (own language in auto mode)
+        self.hole_min = _env_float("LIVE_PREVIEW_HOLE_MIN_SECONDS", 0.8)
+        self.max_holes = int(_env_float("LIVE_PREVIEW_MAX_HOLES_PER_WINDOW", 2))
+        self.busy_retry_ms = int(_env_float("LIVE_PREVIEW_BUSY_RETRY_MS", 1000))
 
 
 # ------------------------------------------------------------------ decoding
@@ -253,25 +265,154 @@ def _words_of(res, offset: float, max_no_speech: float) -> list[PreviewWord]:
     return out
 
 
+def find_holes(words: list[PreviewWord], voiced: list[tuple[float, float]], lo: float, hi: float,
+               min_len: float) -> list[tuple[float, float]]:
+    """Voiced regions inside [lo, hi] (absolute seconds) for which the model returned (almost) no
+    words: e.g. a Kazakh phrase inside a window decoded as Russian is silently dropped by Whisper."""
+    holes = []
+    for a, b in voiced:
+        a, b = max(a, lo), min(b, hi)
+        if b - a < min_len:
+            continue
+        covered = sum(max(0.0, min(b, w.end) - max(a, w.start)) for w in words)
+        if covered < 0.25 * (b - a):
+            holes.append((a, b))
+    return holes
+
+
 def _allowed() -> list[str]:
     return [x.strip() for x in (os.environ.get("ASR_ALLOWED_LANGUAGES") or "ru,kk,en").split(",") if x.strip()]
 
 
-def transcribe_preview(req: LivePreviewRequest, *, registry=None) -> LivePreviewResult:
-    """Never raises for model/audio problems: returns preview_status="unavailable" with the
-    previous utterances kept. Raises AIError("CANCELLED") only when is_cancelled() is True."""
-    prev = req.previous
-    state = prev.state if prev else LivePreviewState()
+class _CallbackFailed(Exception):
+    """on_update raised: re-raised unchanged by transcribe_preview, never reported as an ASR error."""
 
-    def keep(status, error=None, decoded=0.0) -> LivePreviewResult:
-        return LivePreviewResult(processed_until_seconds=prev.processed_until_seconds if prev else 0.0,
-                                 utterances=snapshot(state), preview_status=status, preview_error=error,
-                                 state=state, decoded_seconds=decoded or (prev.decoded_seconds if prev else 0.0))
+    def __init__(self, exc: BaseException):
+        super().__init__(type(exc).__name__)
+        self.exc = exc
+
+
+def restore_state(prev: LivePreviewResult | None) -> LivePreviewState:
+    """State for the next call. An old/lost state with a published snapshot (rows written
+    before ``state`` existed) continues after the last FINAL utterance instead of
+    re-transcribing the recording from zero; non-final text is re-decoded."""
+    if prev is None:
+        return LivePreviewState()
+    st = prev.state
+    if st.committed_until > 0 or st.final or st.open_words or st.tentative:
+        return st
+    finals = tuple(u for u in prev.utterances if u.is_final)
+    if not finals:
+        return st
+    ids = [int(u.id.rsplit("-", 1)[-1]) for u in finals if u.id.rsplit("-", 1)[-1].isdigit()]
+    return LivePreviewState(committed_until=float(finals[-1].end),
+                            next_id=(max(ids) + 1) if ids else len(finals), final=finals)
+
+
+def live_model_key() -> str:
+    """"live_asr" when LIVE_ASR_MODEL_PATH is set (missing weights -> MODEL_UNAVAILABLE, no
+    fallback), otherwise the already loaded final model "asr"."""
+    return "live_asr" if (os.environ.get("LIVE_ASR_MODEL_PATH") or "").strip() else "asr"
+
+
+def window_language(model, clip: np.ndarray, allowed: list[str]) -> str | None:
+    """Best language among ``allowed`` for one window via the public API (extra encoder pass)."""
+    try:
+        _, _, probs = model.detect_language(clip, vad_filter=True)
+    except Exception as exc:  # e.g. no speech left after VAD
+        log.info("preview language detection skipped: %s", type(exc).__name__)
+        return None
+    lang, _ = pick_language(probs or [], allowed)
+    return lang
+
+
+class WindowEncoder:
+    """One encoder pass per window in auto-language mode.
+
+    faster-whisper's own auto mode encodes a window twice (language detection, then
+    decoding), and on CPU the encoder dominates (30 s block whatever the window length).
+    Here the window is encoded once, the language is picked among ASR_ALLOWED_LANGUAGES
+    from that output, and the following ``model.transcribe`` gets the same encoder output
+    for the identical first 30 s segment (exact array match; any other input is encoded
+    normally, so a mismatch only costs time, never correctness). Patched per call under
+    ``compute_lock`` and always restored.
+
+    Also reports ``speech=False`` when Silero VAD (the one transcribe would use) finds no
+    speech: the window is then skipped without an ASR call.
+    """
+
+    def __init__(self, model, clip: np.ndarray, *, vad: bool, detect: bool, allowed: list[str]):
+        self.model, self.language, self.speech, self.reused = model, None, True, 0
+        self._patched = False
+        fe, inner = getattr(model, "feature_extractor", None), getattr(model, "model", None)
+        if fe is None or inner is None or not hasattr(model, "encode"):   # fakes / other runtimes
+            if detect:
+                self.language = window_language(model, clip, allowed)
+            return
+        from faster_whisper.audio import pad_or_trim
+
+        audio_ = clip
+        if vad:
+            from faster_whisper.vad import VadOptions, collect_chunks, get_speech_timestamps
+
+            chunks = get_speech_timestamps(clip, VadOptions())
+            if not chunks:
+                self.speech = False
+                return
+            parts, _ = collect_chunks(clip, chunks)
+            audio_ = np.concatenate(parts, axis=0)
+        if not detect:
+            return
+        feats = fe(audio_)
+        seg = pad_or_trim(feats[:, :min(fe.nb_max_frames, feats.shape[-1] - 1)])
+        enc = model.encode(seg)
+        probs = [(tok[2:-2], p) for tok, p in inner.detect_language(enc)[0]]
+        self.language, _ = pick_language(probs, allowed)
+        seg3, orig = seg[None], model.encode
+
+        def encode(features):
+            f = features if features.ndim == 3 else features[None]
+            if f.shape == seg3.shape and np.array_equal(f, seg3):
+                self.reused += 1
+                return enc
+            return orig(features)
+
+        model.encode = encode      # instance attribute shadows the method for this window only
+        self._patched = True
+
+    def close(self):
+        if self._patched:
+            del self.model.encode
+            self._patched = False
+
+
+def transcribe_preview(req: LivePreviewRequest, *, registry=None) -> LivePreviewResult:
+    """Transcribe new audio of a fixed snapshot window by window.
+
+    After EVERY window ``req.on_update`` (if given) receives the full snapshot; the last one is
+    returned. Never raises for model/audio problems: returns preview_status="unavailable" with
+    the latest utterances kept. Raises AIError("CANCELLED") when is_cancelled() is True, and
+    re-raises exceptions of on_update unchanged."""
+    cfg = LiveConfig()
+    prev = req.previous
+    cur = {"state": restore_state(prev),
+           "processed": prev.processed_until_seconds if prev else 0.0,
+           "decoded": prev.decoded_seconds if prev else 0.0,
+           "model": None}
+
+    def keep(status, error=None, *, retry_after_ms=None) -> LivePreviewResult:
+        return LivePreviewResult(processed_until_seconds=round(cur["processed"], 3),
+                                 utterances=snapshot(cur["state"]), preview_status=status, preview_error=error,
+                                 state=cur["state"], decoded_seconds=round(cur["decoded"], 3),
+                                 retry_after_ms=retry_after_ms, asr_model=cur["model"])
 
     if not compute_lock.acquire(blocking=False):
-        return keep("waiting")  # full processing (or another preview) is running
+        # the model is busy (final processing or another preview): retry, not "no audio"
+        return keep("waiting", retry_after_ms=cfg.busy_retry_ms)
     try:
-        return _run(req, state, prev, keep, registry)
+        return _run(req, cfg, cur, keep, registry)
+    except _CallbackFailed as exc:
+        raise exc.exc
     except AIError as exc:
         if exc.code == "CANCELLED":
             raise
@@ -283,9 +424,22 @@ def transcribe_preview(req: LivePreviewRequest, *, registry=None) -> LivePreview
         compute_lock.release()
 
 
-def _run(req: LivePreviewRequest, state: LivePreviewState, prev, keep, registry) -> LivePreviewResult:
+def _stable_source(req: LivePreviewRequest, work: Path) -> Path:
+    """Only the first ``stable_bytes`` of the container are read, even if the file is longer."""
+    src = Path(req.container_path)
+    if not src.is_file():
+        raise AIError("AUDIO_INVALID", "Снимок записи не найден")
+    size = src.stat().st_size
+    if 0 < req.stable_bytes < size:
+        dst = work / f"stable{src.suffix or '.bin'}"
+        with open(src, "rb") as fi, open(dst, "wb") as fo:
+            fo.write(fi.read(req.stable_bytes))
+        return dst
+    return src
+
+
+def _run(req: LivePreviewRequest, cfg: LiveConfig, cur: dict, keep, registry) -> LivePreviewResult:
     s = get_settings()
-    cfg = LiveConfig()
     cancelled = req.is_cancelled
 
     def check():
@@ -293,52 +447,101 @@ def _run(req: LivePreviewRequest, state: LivePreviewState, prev, keep, registry)
             raise AIError("CANCELLED", "Предпросмотр отменён")
 
     check()
-    src = Path(req.container_path)
-    if not src.is_file():
-        raise AIError("AUDIO_INVALID", "Снимок записи не найден")
     work = Path(req.work_dir)
     work.mkdir(parents=True, exist_ok=True)
+    src = _stable_source(req, work)
     samples = decode_snapshot(src, work / PREVIEW_WAV, timeout=min(120, s.ffmpeg_timeout_seconds))
     total = samples.size / audio.SAMPLE_RATE
-    processed = prev.processed_until_seconds if prev else 0.0
-    if total - processed < cfg.min_new:
-        return keep("waiting", decoded=total)
+    if total + 1.0 < cur["decoded"]:
+        # not a prefix of the same container (e.g. a single chunk passed as a file)
+        return keep("unavailable", {"code": "AUDIO_INVALID",
+                                    "message": "Снимок короче уже декодированного: нужен префикс того же контейнера"})
+    cur["decoded"] = total
+    if total - cur["processed"] < cfg.min_new:
+        return keep("waiting")  # not enough new audio; has_pending_audio=False, no retry_after_ms
 
     check()
     reg = registry or get_registry()
+    key = live_model_key()
     try:
-        model = reg.get("asr")
+        model = reg.get(key)
     except ModelUnavailable as exc:
         raise AIError("MODEL_UNAVAILABLE", exc.message, model=exc.model)
+    cur["model"] = key
 
+    language = req.asr_language if req.asr_language is not None else s.asr_language
+    language = None if language in (None, "", "auto") else language   # meeting choice is never overridden
+    profile = req.asr_profile or s.asr_profile
+    allowed = _allowed()
     asr_time = 0.0
+    last = None
     for _ in range(max(1, cfg.max_windows)):
-        start = 0.0 if state.committed_until <= 0 else quiet_point(samples, state.committed_until - cfg.overlap)
+        state = cur["state"]
+        # The previous window already kept `overlap` (backlog) / `guard` (live edge) uncommitted
+        # before its end; the next one starts only `context` before the committed point, in a pause.
+        start = 0.0 if state.committed_until <= 0 else quiet_point(samples, state.committed_until - cfg.context,
+                                                                   radius=min(0.75, cfg.context + 0.25))
         start = min(start, state.committed_until)  # never skip uncommitted audio
         end = min(total, start + cfg.window)
+        if total - end < cfg.min_new and total - start <= 29.5:
+            end = total   # do not leave a stub shorter than min_new behind the live edge
         if end - start < 0.5:
             break
         live_edge = end >= total
         clip = samples[int(start * audio.SAMPLE_RATE):int(end * audio.SAMPLE_RATE)]
         check()
         t0 = time.perf_counter()
-        language = req.asr_language if req.asr_language is not None else s.asr_language
-        res = transcribe(model, clip, language=None if language == "auto" else language,
-                         profile=req.asr_profile or s.asr_profile, beam_size=cfg.beam_size or s.asr_beam_size,
-                         multilingual=env_bool("ASR_MULTILINGUAL", True),
-                         vad_filter=env_bool("ASR_VAD_FILTER", True), is_cancelled=cancelled,
-                         allowed_languages=_allowed() if cfg.refine else None,
-                         min_language_prob=_env_float("ASR_LANGUAGE_MIN_PROB", 0.5),
-                         hallucination_silence_threshold=cfg.hallucination_silence)
-        dt = time.perf_counter() - t0
-        asr_time += dt
+        vad = env_bool("ASR_VAD_FILTER", True)
+        enc = WindowEncoder(model, clip, vad=vad, allowed=allowed,
+                            detect=language is None and cfg.restrict_languages and not cfg.refine)
+        try:
+            if not enc.speech:
+                res = None   # VAD: no speech in the window, transcribe would return nothing
+            else:
+                res = transcribe(model, clip, language=language or enc.language, profile=profile,
+                                 beam_size=cfg.beam_size or s.asr_beam_size,
+                                 multilingual=env_bool("ASR_MULTILINGUAL", True),
+                                 vad_filter=vad, is_cancelled=cancelled,
+                                 allowed_languages=allowed if cfg.refine else None,
+                                 min_language_prob=_env_float("ASR_LANGUAGE_MIN_PROB", 0.5),
+                                 hallucination_silence_threshold=cfg.hallucination_silence)
+        finally:
+            enc.close()
         check()
         voiced = [(start + a, start + b) for a, b in energy_speech_regions(clip, audio.SAMPLE_RATE)]
-        state = merge_window(state, _words_of(res, start, cfg.no_speech_prob), end, live_edge, cfg, voiced)
-        processed = end
-        log.info("preview window %.1f-%.1fs: asr %.2fs (x%.2f)", start, end, dt, dt / max(end - start, 1e-6))
+        words = _words_of(res, start, cfg.no_speech_prob) if res is not None else []
+        hi = end - (cfg.guard if live_edge else cfg.overlap)   # the tail is re-decoded by the next window anyway
+        for a, b in find_holes(words, voiced, max(start, state.committed_until), hi, cfg.hole_min)[:cfg.max_holes]:
+            check()
+            a0, b0 = max(0.0, a - 0.2), min(total, b + 0.2)
+            sub = samples[int(a0 * audio.SAMPLE_RATE):int(b0 * audio.SAMPLE_RATE)]
+            henc = WindowEncoder(model, sub, vad=False, allowed=allowed, detect=language is None and not cfg.refine)
+            try:
+                hres = transcribe(model, sub, language=language or henc.language, profile=profile,
+                                  beam_size=cfg.beam_size or s.asr_beam_size, multilingual=False,
+                                  vad_filter=False, is_cancelled=cancelled,
+                                  hallucination_silence_threshold=cfg.hallucination_silence) if henc.speech else None
+            finally:
+                henc.close()
+            extra = [w for w in (_words_of(hres, a0, cfg.no_speech_prob) if hres else [])
+                     if w.end > a - 0.1 and w.start < b + 0.1]
+            log.info("preview hole %.1f-%.1fs: lang=%s words=%d", a, b, language or henc.language, len(extra))
+            words = sorted(words + extra, key=lambda w: w.start)
+        dt = time.perf_counter() - t0
+        asr_time += dt
+        cur["state"] = merge_window(state, words, end, live_edge, cfg, voiced)
+        cur["processed"] = end
+        log.info("preview window %.1f-%.1fs: asr %.2fs (x%.2f) lang=%s encoder_reused=%d speech=%s", start, end, dt,
+                 dt / max(end - start, 1e-6), language or enc.language, enc.reused, enc.speech)
+        last = LivePreviewResult(processed_until_seconds=round(end, 3), utterances=snapshot(cur["state"]),
+                                 preview_status="ready", preview_error=None, state=cur["state"],
+                                 decoded_seconds=round(total, 3), asr_seconds=round(asr_time, 2),
+                                 has_pending_audio=total - end >= cfg.min_new, asr_model=key)
+        if req.on_update is not None:
+            try:
+                req.on_update(last)
+            except Exception as exc:
+                raise _CallbackFailed(exc) from exc
         if live_edge:
             break
-    return LivePreviewResult(processed_until_seconds=round(processed, 3), utterances=snapshot(state),
-                             preview_status="ready", preview_error=None, state=state,
-                             decoded_seconds=round(total, 3), asr_seconds=round(asr_time, 2))
+    return last or keep("waiting")

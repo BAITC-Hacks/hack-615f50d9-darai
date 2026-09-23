@@ -109,7 +109,9 @@ test("последовательные бинарные части, финаль
   });
   await page.getByRole("button", { name: "Завершить запись" }).click();
   await expect(
-    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", { exact: true }),
+    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", {
+      exact: true,
+    }),
   ).toBeVisible({ timeout: 12000 });
   expect(
     Buffer.concat(state.liveChunks.map((c) => c.bytes)).toString(),
@@ -151,7 +153,9 @@ test("сбой сети сохраняет байты для retry; preview erro
   ).toBeVisible();
   await page.getByRole("button", { name: "Повторить отправку" }).click();
   await expect(
-    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", { exact: true }),
+    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", {
+      exact: true,
+    }),
   ).toBeVisible({ timeout: 12000 });
   expect(
     Buffer.concat(state.liveChunks.map((c) => c.bytes)).toString(),
@@ -173,7 +177,7 @@ for (const mode of ["denied", "silent"])
     expect(state.requests.filter((r) => r.path.endsWith("/live"))).toHaveLength(
       0,
     );
-    await expect(page.getByText("Идёт запись", { exact: false })).toHaveCount(
+    await expect(page.getByText("Запись идёт", { exact: false })).toHaveCount(
       0,
     );
   });
@@ -211,7 +215,7 @@ test("настоящий MediaRecorder на искусственном ауди�
   await page
     .getByRole("button", { name: "Начать запись", exact: true })
     .click();
-  await expect(page.getByText("Идёт запись", { exact: false })).toBeVisible();
+  await expect(page.getByText("Запись идёт", { exact: false })).toBeVisible();
   await expect
     .poll(() => state.liveChunks.length, { timeout: 10000 })
     .toBeGreaterThan(0);
@@ -220,7 +224,9 @@ test("настоящий MediaRecorder на искусственном ауди�
     track.dispatchEvent(new Event("ended"));
   });
   await expect(
-    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", { exact: true }),
+    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", {
+      exact: true,
+    }),
   ).toBeVisible({ timeout: 15000 });
   expect(state.liveChunks.length).toBeGreaterThan(0);
 });
@@ -230,7 +236,7 @@ test("выход со страницы освобождает потоки и к
   await page
     .getByRole("button", { name: "Начать запись", exact: true })
     .click();
-  await expect(page.getByText("Идёт запись", { exact: false })).toBeVisible();
+  await expect(page.getByText("Запись идёт", { exact: false })).toBeVisible();
   page.once("dialog", (d) => d.accept());
   await page.getByRole("link", { name: "Сотрудники", exact: true }).click();
   await expect(
@@ -248,13 +254,216 @@ test("выход со страницы освобождает потоки и к
 test("язык и профиль сохраняются до начала записи", async ({ page }) => {
   const state = await setup(page);
   await page.getByLabel("Язык совещания", { exact: true }).selectOption("kk");
-  await page.getByLabel("Режим распознавания", { exact: true }).selectOption("refined");
-  await expect(page.getByRole("button", { name: "Подготовить источник" })).toBeDisabled();
-  await page.getByRole("button", { name: "Сохранить настройки распознавания" }).click();
-  await expect(page.getByRole("button", { name: "Подготовить источник" })).toBeEnabled();
+  await page
+    .getByLabel("Режим распознавания", { exact: true })
+    .selectOption("refined");
+  await expect(
+    page.getByRole("button", { name: "Подготовить источник" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Сохранить настройки распознавания" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Подготовить источник" }),
+  ).toBeEnabled();
   expect(state.meetings[0].asr_language).toBe("kk");
   expect(state.meetings[0].asr_profile).toBe("refined");
   await page.reload();
-  await expect(page.getByLabel("Язык совещания", { exact: true })).toHaveValue("kk");
-  await page.screenshot({ path: "test-results/speech-settings.png", fullPage: true });
+  await expect(page.getByLabel("Язык совещания", { exact: true })).toHaveValue(
+    "kk",
+  );
+  await page.screenshot({
+    path: "test-results/speech-settings.png",
+    fullPage: true,
+  });
+});
+
+const previewLine = (id: string, text: string, is_final = false) => ({
+  id,
+  start: 0,
+  end: 4,
+  speaker_label: null,
+  text,
+  is_final,
+});
+async function startPreview(page: Page) {
+  await page.getByRole("button", { name: "Подготовить источник" }).click();
+  await page
+    .getByRole("button", { name: "Начать запись", exact: true })
+    .click();
+}
+test("preview: ожидание → ASR → текст → исправление, задержка, сбой и восстановление", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  state.liveSnapshots = [
+    {
+      preview_status: "waiting",
+      utterances: [],
+      lag_seconds: null,
+      received_audio_seconds: null,
+    },
+    {
+      preview_status: "processing",
+      utterances: [],
+      lag_seconds: 3,
+      received_audio_seconds: 3,
+    },
+  ];
+  state.livePollDelay = 200;
+  await startPreview(page);
+  await expect(
+    page.getByText("Ожидаем достаточно речи для распознавания"),
+  ).toBeVisible();
+  await expect(page.getByText("Серверная задержка: нет данных")).toBeVisible();
+  await expect(page.getByText("Распознаём первый фрагмент")).toBeVisible();
+  state.liveSnapshots = [
+    {
+      preview_status: "ready",
+      processed_until_seconds: 12,
+      lag_seconds: 18,
+      received_audio_seconds: 30,
+      utterances: [
+        previewLine("a", "Бюджетті талқылаймыз.", true),
+        previewLine("b", "Отчёт в среду"),
+      ],
+    },
+  ];
+  await expect(page.getByText("Отчёт в среду", { exact: true })).toBeVisible();
+  await expect(page.getByText("Распознано:", { exact: false })).toContainText(
+    "00:12",
+  );
+  await expect(
+    page.getByText("Распознавание отстаёт на 18 секунд; аудио сохраняется"),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "test-results/live-preview-lag.png",
+    fullPage: true,
+  });
+  state.liveSnapshots = [
+    {
+      preview_status: "processing",
+      processed_until_seconds: 16,
+      lag_seconds: 4,
+      received_audio_seconds: 20,
+      utterances: [
+        previewLine("a", "Бюджетті талқылаймыз.", true),
+        previewLine("b", "Отчёт в пятницу"),
+      ],
+    },
+  ];
+  await expect(
+    page.getByText("Отчёт в пятницу", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Отчёт в среду", { exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-utterance-id]")).toHaveCount(2);
+  await expect(page.getByText("Серверная задержка: 4 сек.")).toBeVisible();
+  state.livePollFailures = 1;
+  await expect(
+    page.getByText(/Показан последний полученный текст/),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Отчёт в пятницу", { exact: true }),
+  ).toBeVisible();
+  state.liveSnapshots = [
+    {
+      preview_status: "unavailable",
+      preview_error: { code: "ASR_DOWN", message: "ASR временно недоступен" },
+      utterances: [],
+      lag_seconds: 20,
+    },
+  ];
+  await expect(page.getByText(/Запись аудио продолжается/)).toBeVisible();
+  await expect(
+    page.getByText("Отчёт в пятницу", { exact: true }),
+  ).toBeVisible();
+  const count = state.liveChunks.length;
+  await expect.poll(() => state.liveChunks.length).toBeGreaterThan(count);
+  expect(
+    state.livePollTimes
+      .slice(1)
+      .every((t, i) => t - state.livePollTimes[i] >= 2150),
+  ).toBeTruthy();
+  await page.getByRole("button", { name: "Завершить запись" }).click();
+  await expect(
+    page
+      .getByText("Уточняем полный транскрипт, спикеров и поручения", {
+        exact: true,
+      })
+      .first(),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Әлия, дайындаңыз есеп. Подготовьте отчёт до пятницы.", {
+      exact: true,
+    }),
+  ).toBeVisible({ timeout: 12000 });
+});
+test("старый snapshot без новых полей и null не выдумывают задержку", async ({
+  page,
+}) => {
+  const state = await setup(page);
+  await startPreview(page);
+  await expect(page.getByText("Алғашқы мәтін", { exact: true })).toBeVisible();
+  await expect(page.getByText("Серверная задержка: нет данных")).toBeVisible();
+  await expect(
+    page.getByText("Получено сервером:", { exact: false }),
+  ).toHaveCount(0);
+  state.liveSnapshots = [{ lag_seconds: null, received_audio_seconds: null }];
+  await expect(
+    page.getByText("Жаңартылған мәтін", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Серверная задержка: нет данных")).toBeVisible();
+});
+test("прокрутка следует концу, но не мешает чтению выше", async ({ page }) => {
+  const state = await setup(page);
+  const lines = Array.from({ length: 12 }, (_, i) =>
+    previewLine(`line-${i}`, `Реплика ${i} · Ә Ғ Қ`, i < 11),
+  );
+  state.liveSnapshots = [{ utterances: lines }];
+  await startPreview(page);
+  const region = page.getByRole("region", {
+    name: "Реплики предварительного транскрипта",
+  });
+  await expect(page.locator("[data-utterance-id]")).toHaveCount(12);
+  await expect
+    .poll(() =>
+      region.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+    )
+    .toBeLessThan(5);
+  await region.evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+  });
+  state.liveSnapshots = [
+    { utterances: [...lines, previewLine("line-12", "Новая реплика")] },
+  ];
+  await expect(
+    page.getByRole("button", { name: "Новые реплики ↓" }),
+  ).toBeVisible();
+  expect(await region.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.getByRole("button", { name: "Новые реплики ↓" }).click();
+  await expect
+    .poll(() =>
+      region.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+    )
+    .toBeLessThan(5);
+  await expect(
+    page.getByRole("button", { name: "Новые реплики ↓" }),
+  ).toHaveCount(0);
+  state.liveSnapshots = [
+    {
+      utterances: [
+        ...lines,
+        previewLine("line-12", "Исправленная новая реплика"),
+      ],
+    },
+  ];
+  await expect(
+    page.getByText("Исправленная новая реплика", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      region.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+    )
+    .toBeLessThan(5);
 });

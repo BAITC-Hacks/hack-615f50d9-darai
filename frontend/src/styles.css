@@ -934,3 +934,12 @@ td small {
   color: #385445;
   font-size: 13px;
 }
+
+.live-preview { margin-top: 20px; }
+.live-metrics { font-variant-numeric: tabular-nums; }
+.live-transcript-scroll { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.live-transcript-scroll:focus-visible { outline: 2px solid var(--accent, #176657); outline-offset: 3px; }
+.live-utterances { list-style: none; padding: 0; margin: 0; }
+.live-utterances li { padding: 12px; margin-bottom: 8px; border-left: 3px solid #377c69; background: #f3f8f6; border-radius: 4px; }
+.live-utterances li.preview-changing { border-left-style: dashed; background: #fff9eb; }
+.live-utterances p { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }

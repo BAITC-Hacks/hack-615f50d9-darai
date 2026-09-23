@@ -45,9 +45,23 @@ class ModelUnavailable(Exception):
 class ModelSlot:
     key: str
     model_id: str
-    status: str = "not_loaded"  # not_loaded | loading | ready | error
+    status: str = "not_loaded"  # not_loaded | loading | ready | error | not_configured (live_asr)
     error: str | None = None
     obj: Any = None
+
+
+def live_asr_path(settings: Settings) -> Path | None:
+    """Separate live-preview ASR model (e.g. large-v3-turbo), or None when not configured.
+
+    LIVE_ASR_MODEL_PATH: absolute, or relative to MODELS_DIR. Empty = live preview uses the
+    "asr" slot (the final large-v3) explicitly. A configured but missing path is an error for
+    the "live_asr" slot; it is never silently replaced by another model.
+    """
+    raw = (os.environ.get("LIVE_ASR_MODEL_PATH") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_absolute() else Path(settings.models_dir) / path
 
 
 def segmentation_path(settings: Settings) -> Path:
@@ -62,14 +76,18 @@ def embedding_checkpoint(settings: Settings) -> Path:
 class ModelRegistry:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._locks = {k: threading.Lock() for k in ("asr", "diarization", "embedding")}
+        self._locks = {k: threading.Lock() for k in ("asr", "live_asr", "diarization", "embedding")}
+        live = live_asr_path(settings)
         self.slots = {
             "asr": ModelSlot("asr", settings.asr_model_id),
+            "live_asr": ModelSlot("live_asr", os.environ.get("LIVE_ASR_MODEL_ID") or (live.name if live else ""),
+                                  status="not_loaded" if live else "not_configured"),
             "diarization": ModelSlot("diarization", settings.diarization_model_id),
             "embedding": ModelSlot("embedding", settings.voice_model_id),
         }
         self._loaders: dict[str, Callable[[], Any]] = {
             "asr": self._load_asr,
+            "live_asr": self._load_live_asr,
             "diarization": self._load_diarization,
             "embedding": self._load_embedding,
         }
@@ -121,6 +139,23 @@ class ModelRegistry:
         s = self.settings
         return WhisperModel(str(path), device=s.asr_device, compute_type=s.asr_compute_type,
                             cpu_threads=s.asr_cpu_threads, local_files_only=True)
+
+    def _load_live_asr(self):
+        path = live_asr_path(self.settings)
+        if path is None:
+            raise ModelUnavailable("live_asr", "LIVE_ASR_MODEL_PATH не задан")
+        if not (path / "model.bin").is_file():
+            raise ModelUnavailable("live_asr", f"Не найдены веса live-модели faster-whisper: {path}/model.bin")
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise ModelUnavailable("live_asr", f"faster-whisper не установлен: {exc}")
+        s = self.settings
+        threads = os.environ.get("LIVE_ASR_CPU_THREADS", "").strip()
+        return WhisperModel(str(path), device=os.environ.get("LIVE_ASR_DEVICE") or s.asr_device,
+                            compute_type=os.environ.get("LIVE_ASR_COMPUTE_TYPE") or s.asr_compute_type,
+                            cpu_threads=int(threads) if threads.isdigit() else s.asr_cpu_threads,
+                            local_files_only=True)
 
     def _embedding_model(self):
         """Raw pyannote Model for WeSpeaker; shared by diarization and voice matching."""

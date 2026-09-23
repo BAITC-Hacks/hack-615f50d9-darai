@@ -1,3 +1,4 @@
+import { LiveTranscript } from "./LiveTranscript";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "./api";
 import { liveApi, type LiveSnapshot } from "./live-api";
@@ -20,6 +21,7 @@ export function MeetingLiveRecorder({
   const [mic, setMic] = useState(false);
   const [phase, setPhase] = useState("idle");
   const [error, setError] = useState("");
+  const [pollError, setPollError] = useState("");
   const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null);
   const [seconds, setSeconds] = useState(0);
   const [level, setLevel] = useState(0);
@@ -245,7 +247,15 @@ export function MeetingLiveRecorder({
         abort.current.signal,
       );
       if (!alive.current || cancelled.current) return;
-      setSnapshot(s);
+      setPollError("");
+      setSnapshot((previous) => ({
+        ...s,
+        utterances:
+          s.utterances.length === 0 &&
+          ["waiting", "processing", "unavailable"].includes(s.preview_status)
+            ? (previous?.utterances ?? [])
+            : s.utterances,
+      }));
       if (s.state === "done") {
         setPhase("done");
         activeRef.current(false);
@@ -266,7 +276,7 @@ export function MeetingLiveRecorder({
       }
     } catch (e) {
       if (!alive.current || cancelled.current) return;
-      setError(
+      setPollError(
         e instanceof Error
           ? `Предварительный текст недоступен: ${e.message}`
           : "Не удалось обновить текст.",
@@ -477,6 +487,7 @@ export function MeetingLiveRecorder({
       URL.revokeObjectURL(url.current);
       setBackup("");
       setSnapshot(null);
+      setPollError("");
       setPhase("idle");
       setError("");
     } catch (e) {
@@ -516,13 +527,13 @@ export function MeetingLiveRecorder({
       <progress aria-label="Уровень звука" max={100} value={level} />
       <p role="status">
         {phase === "recording"
-          ? "Идёт запись"
+          ? "Запись идёт"
           : phase === "ready"
             ? "Источник готов. Проверьте уровень звука."
             : phase === "sending"
               ? "Отправляем запись…"
               : phase === "finalizing"
-                ? "Финальная обработка…"
+                ? "Уточняем полный транскрипт, спикеров и поручения"
                 : phase === "done"
                   ? "Запись сохранена и обработана"
                   : phase === "preparing"
@@ -530,7 +541,7 @@ export function MeetingLiveRecorder({
                     : phase === "starting"
                       ? "Создаём сессию…"
                       : ""}{" "}
-        · {timecode(seconds)}
+        · Локальный таймер: {timecode(seconds)}
       </p>
       <div className="form-actions">
         {phase === "idle" && (
@@ -570,7 +581,12 @@ export function MeetingLiveRecorder({
           </button>
         )}
       </div>
-      {pending > 0 && <p>Частей ожидают подтверждения: {pending}</p>}
+      {session.current && (
+        <p>
+          Неотправленных / неподтверждённых частей: {pending}
+          {failed.current ? " · Сбой отправки — требуется повтор" : ""}
+        </p>
+      )}
       {error && <Notice kind="error">{error}</Notice>}
       {backup && (
         <a
@@ -580,30 +596,15 @@ export function MeetingLiveRecorder({
           Скачать резервную запись
         </a>
       )}
-      {snapshot && (
-        <div>
-          <h3>Предварительный транскрипт</h3>
-          <p>
-            Реплики могут измениться. Обработано:{" "}
-            {timecode(snapshot.processed_until_seconds)} · записано:{" "}
-            {timecode(seconds)}
-          </p>
-          {snapshot.preview_error && (
-            <Notice kind="warning">
-              {snapshot.preview_error.message} Сохранение аудио продолжается.
-            </Notice>
-          )}
-          {snapshot.utterances.length === 0 && (
-            <p>Ожидаем распознавание речи…</p>
-          )}
-          {snapshot.utterances.map((u) => (
-            <p key={u.id}>
-              <span className="timestamp">{timecode(u.start)}</span>{" "}
-              <strong>{u.speaker_label ?? "Говорящий не определён"}</strong>:{" "}
-              {u.text}
-            </p>
-          ))}
-        </div>
+      {(snapshot || phase === "recording" || phase === "finalizing") && (
+        <LiveTranscript
+          snapshot={snapshot}
+          recording={phase === "recording"}
+          finalizing={
+            phase === "finalizing" || snapshot?.state === "finalizing"
+          }
+          pollError={pollError}
+        />
       )}
     </div>
   );

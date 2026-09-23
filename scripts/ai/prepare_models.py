@@ -27,6 +27,10 @@ MODELS = {
     "asr": ("Systran/faster-whisper-large-v3", "edaa852ec7e145841d8ffdb056a99866b5f0a478",
             "faster-whisper-large-v3",
             ["config.json", "model.bin", "preprocessor_config.json", "tokenizer.json", "vocabulary.json"], False),
+    # OPTIONAL live-preview model (LIVE_ASR_MODEL_PATH); the final pipeline keeps "asr" (large-v3)
+    "live_asr": ("mobiuslabsgmbh/faster-whisper-large-v3-turbo", "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+                 "faster-whisper-large-v3-turbo",
+                 ["config.json", "model.bin", "preprocessor_config.json", "tokenizer.json", "vocabulary.json"], False),
     "embedding": ("pyannote/wespeaker-voxceleb-resnet34-LM", "837717ddb9ff5507820346191109dc79c958d614",
                   "pyannote/wespeaker-voxceleb-resnet34-LM", ["config.yaml", "pytorch_model.bin"], False),
     "segmentation": ("pyannote/segmentation-3.0", "e66f3d3b9eb0873085418a7b813d3b369bf160bb",
@@ -35,13 +39,13 @@ MODELS = {
                     "pyannote/speaker-diarization-3.1", ["config.yaml"], True),
 }
 
-APPROX_MB = {"asr": 3091, "embedding": 27, "segmentation": 6, "diarization": 1}
+APPROX_MB = {"asr": 3091, "live_asr": 1622, "embedding": 27, "segmentation": 6, "diarization": 1}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--models-dir", default=os.environ.get("MODELS_DIR", "models"))
-    ap.add_argument("--only", default=",".join(MODELS), help="comma list: " + ",".join(MODELS))
+    ap.add_argument("--only", default=",".join(k for k in MODELS if k != "live_asr"), help="comma list: " + ",".join(MODELS))
     args = ap.parse_args()
 
     from huggingface_hub import hf_hub_download

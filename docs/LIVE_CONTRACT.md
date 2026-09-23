@@ -1,6 +1,6 @@
 # DARAI — контракт live-записи (backend ↔ frontend)
 
-Версия **1.0**, 2026-09-23. Дополняет `docs/API_CONTRACT.md` (формат ошибок, cookie-сессия, `X-CSRF-Token`, UUID, `/api`-префикс только на стороне frontend). Все операции — только **редактор встречи** (admin, организатор, секретарь); чужая/недоступная встреча → `404`, участник без прав редактора → `403 FORBIDDEN`.
+Версия **1.1**, 2026-09-23 (1.1: `received_audio_seconds`, `lag_seconds`, preview по времени, публикация после каждого окна). Дополняет `docs/API_CONTRACT.md` (формат ошибок, cookie-сессия, `X-CSRF-Token`, UUID, `/api`-префикс только на стороне frontend). Все операции — только **редактор встречи** (admin, организатор, секретарь); чужая/недоступная встреча → `404`, участник без прав редактора → `403 FORBIDDEN`.
 
 Транспорт: бинарные HTTP-загрузки + polling. WebSocket нет.
 
@@ -56,6 +56,8 @@
   "next_sequence": 3,
   "received_bytes": 12345,
   "processed_until_seconds": 12.3,
+  "received_audio_seconds": 14.1,
+  "lag_seconds": 1.8,
   "revision": 2,
   "preview_status": "ready",
   "preview_error": null,
@@ -73,7 +75,22 @@
 - `preview_status`: `waiting` (мало данных/ждёт очереди), `processing`, `ready`, `unavailable` (модели нет или ошибка; `preview_error = {"code","message"}`). Ошибка preview не влияет на запись и финализацию.
 - `revision` растёт при каждом новом preview.
 - `draft_tasks` — схема Task из API_CONTRACT; сейчас всегда `[]`. Предварительные задачи не сохраняются и не отправляются исполнителям.
-- `processed_until_seconds` — до какого момента аудио покрыто preview.
+- `processed_until_seconds` — до какого момента аудио реально распознано preview (не «принято»).
+- `received_audio_seconds` — **измеренная** длительность декодируемого аудио в последнем снимке, который видел AI (не оценка по байтам). `null`, пока снимок ещё не декодировался.
+- `lag_seconds = max(0, received_audio_seconds − processed_until_seconds)`; `null`, пока `received_audio_seconds` неизвестна. `received_audio_seconds` обновляется при каждой попытке preview и может отставать от `received_bytes`.
+
+### Как обновляется preview (backend)
+
+Три разных счётчика: `received_bytes` (сохранено на диск), `received_audio_seconds` (декодировано из снимка), `processed_until_seconds` (распознано). Один вызов AI не означает, что весь снимок распознан.
+
+- На сессию — один фоновый поток preview (не задача на каждый чанк); повторные чанки только будят его. Не больше одной обработки на сессию; на процесс — одна обработка preview одновременно, тяжёлые модели под `ml.compute_lock`; во время полной обработки записи preview ждёт.
+- Новые данные проверяются не чаще раза в `LIVE_PREVIEW_CHECK_INTERVAL_MS` (2000). Порога в байтах по сути нет (`LIVE_PREVIEW_MIN_NEW_BYTES`, по умолчанию 1): достаточно ли речи для ASR, решает AI (`LIVE_PREVIEW_MIN_NEW_SECONDS`).
+- После **каждого** окна ASR результат сохраняется сразу (`revision` +1), не дожидаясь конца вызова.
+- AI сообщил `has_pending_audio` (есть необработанный backlog в том же снимке) и продвинулся → следующий вызов сразу, с тем же снимком, без нового чанка.
+- AI вернул `waiting` без backlog (мало речи) → поток ждёт новый чанк; повтор на тех же байтах не выполняется.
+- AI вернул `retry_after_ms` (модель занята) → один отложенный повтор через указанное время (ограничено `LIVE_PREVIEW_RETRY_MAX_MS`), без busy-loop и без новых фоновых задач.
+- Ошибка preview (`unavailable`) → следующая попытка не раньше `LIVE_PREVIEW_ERROR_BACKOFF_MS` и только на новых байтах.
+- `cancel`/`finish`/смена состояния/рестарт останавливают поток; результаты, пришедшие после этого, не публикуются (проверка состояния под блокировкой строки).
 
 ## 4. `POST /meetings/{id}/live/{session_id}/finish`
 
@@ -100,4 +117,4 @@
 
 ## Ограничения
 
-`LIVE_MAX_CHUNK_BYTES` (5 MiB), `MAX_UPLOAD_MB` на сессию, `MAX_AUDIO_SECONDS` проверяется при `finish`, `LIVE_IDLE_TIMEOUT_SECONDS` (120), `LIVE_PREVIEW_MIN_NEW_SECONDS`/`LIVE_PREVIEW_MIN_NEW_BYTES` — объединение обновлений preview; одна активная сессия на встречу; preview выполняется не чаще одного задания на сессию и пропускается, пока идёт полная обработка.
+`LIVE_MAX_CHUNK_BYTES` (5 MiB), `MAX_UPLOAD_MB` на сессию, `MAX_AUDIO_SECONDS` проверяется при `finish`, `LIVE_IDLE_TIMEOUT_SECONDS` (120), `LIVE_PREVIEW_CHECK_INTERVAL_MS` (2000), `LIVE_PREVIEW_MIN_NEW_BYTES` (1), `LIVE_PREVIEW_RETRY_MAX_MS` (30000), `LIVE_PREVIEW_ERROR_BACKOFF_MS` (10000), `LIVE_PREVIEW_MIN_NEW_SECONDS` (AI) — объединение обновлений preview; одна активная сессия на встречу; preview выполняется не чаще одного задания на сессию и пропускается, пока идёт полная обработка.
