@@ -615,6 +615,49 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "employees"
+        ],
+        "summary": "Delete Employee",
+        "description": "«Удалить» = archive: employee inactive, account deactivated, sessions revoked — one transaction.\nHistory (meetings, speakers, tasks, voice profile row) is kept; the voice profile is\nexcluded from matching because matching only uses active employees.",
+        "operationId": "delete_employee_employees__employee_id__delete",
+        "parameters": [
+          {
+            "name": "employee_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Employee Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "FORBIDDEN"
+          },
+          "404": {
+            "description": "NOT_FOUND"
+          },
+          "409": {
+            "description": "SELF_DELETE_FORBIDDEN | LAST_ADMIN"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/employees/{employee_id}/voice": {
@@ -918,6 +961,18 @@
                       }
                     ],
                     "title": "Secretary Id"
+                  },
+                  "meeting_url": {
+                    "anyOf": [
+                      {
+                        "maxLength": 2000,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Meeting Url"
                   }
                 },
                 "required": [
@@ -966,6 +1021,10 @@
                   "secretary_id": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "meeting_url": {
+                    "type": "string",
+                    "format": "uri"
                   }
                 }
               }
@@ -1890,6 +1949,344 @@
           }
         }
       }
+    },
+    "/meetings/{meeting_id}/live": {
+      "post": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Start Live",
+        "operationId": "start_live_meetings__meeting_id__live_post",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveStartIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveStartOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/meetings/{meeting_id}/live/{session_id}/chunks/{sequence}": {
+      "put": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Put Chunk",
+        "operationId": "put_chunk_meetings__meeting_id__live__session_id__chunks__sequence__put",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "sequence",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Sequence"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "audio/webm": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/meetings/{meeting_id}/live/{session_id}": {
+      "get": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Get Live",
+        "operationId": "get_live_meetings__meeting_id__live__session_id__get",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveSnapshotOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/meetings/{meeting_id}/live/{session_id}/finish": {
+      "post": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Finish Live",
+        "operationId": "finish_live_meetings__meeting_id__live__session_id__finish_post",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinishOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/meetings/{meeting_id}/live/{session_id}/cancel": {
+      "post": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Cancel Live",
+        "operationId": "cancel_live_meetings__meeting_id__live__session_id__cancel_post",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/meetings/{meeting_id}/link": {
+      "patch": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Patch Link",
+        "description": "Stored as text only: the server never opens or fetches the URL.",
+        "operationId": "patch_link_meetings__meeting_id__link_patch",
+        "parameters": [
+          {
+            "name": "meeting_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Meeting Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1949,6 +2346,24 @@
           "new_password"
         ],
         "title": "ChangePasswordIn"
+      },
+      "ChunkOut": {
+        "properties": {
+          "accepted_sequence": {
+            "type": "integer",
+            "title": "Accepted Sequence"
+          },
+          "next_sequence": {
+            "type": "integer",
+            "title": "Next Sequence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted_sequence",
+          "next_sequence"
+        ],
+        "title": "ChunkOut"
       },
       "ConfirmIn": {
         "properties": {
@@ -2067,6 +2482,11 @@
             ],
             "title": "User Id"
           },
+          "can_delete": {
+            "type": "boolean",
+            "title": "Can Delete",
+            "default": false
+          },
           "voice_profile": {
             "$ref": "#/components/schemas/VoiceStatusOut"
           }
@@ -2183,6 +2603,51 @@
         ],
         "title": "ExtractionOut"
       },
+      "FinishIn": {
+        "properties": {
+          "last_sequence": {
+            "type": "integer",
+            "minimum": -1.0,
+            "title": "Last Sequence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "last_sequence"
+        ],
+        "title": "FinishIn"
+      },
+      "FinishOut": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "recording_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recording Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "state",
+          "recording_id"
+        ],
+        "title": "FinishOut"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2213,6 +2678,279 @@
           "database"
         ],
         "title": "HealthOut"
+      },
+      "LinkIn": {
+        "properties": {
+          "meeting_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "LinkIn"
+      },
+      "LinkOut": {
+        "properties": {
+          "meeting_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "meeting_url"
+        ],
+        "title": "LinkOut"
+      },
+      "LiveError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "LiveError"
+      },
+      "LiveSnapshotOut": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "recording",
+              "finalizing",
+              "done",
+              "error",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "next_sequence": {
+            "type": "integer",
+            "title": "Next Sequence"
+          },
+          "received_bytes": {
+            "type": "integer",
+            "title": "Received Bytes"
+          },
+          "processed_until_seconds": {
+            "type": "number",
+            "title": "Processed Until Seconds"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "preview_status": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "processing",
+              "ready",
+              "unavailable"
+            ],
+            "title": "Preview Status"
+          },
+          "preview_error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LiveError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "utterances": {
+            "items": {
+              "$ref": "#/components/schemas/LiveUtterance"
+            },
+            "type": "array",
+            "title": "Utterances"
+          },
+          "draft_tasks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Draft Tasks"
+          },
+          "recording_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recording Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LiveError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "state",
+          "next_sequence",
+          "received_bytes",
+          "processed_until_seconds",
+          "revision",
+          "preview_status",
+          "preview_error",
+          "utterances",
+          "draft_tasks",
+          "recording_id",
+          "error"
+        ],
+        "title": "LiveSnapshotOut"
+      },
+      "LiveStartIn": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "microphone",
+              "display"
+            ],
+            "title": "Source"
+          },
+          "mime_type": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Mime Type"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source",
+          "mime_type"
+        ],
+        "title": "LiveStartIn"
+      },
+      "LiveStartOut": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "next_sequence": {
+            "type": "integer",
+            "title": "Next Sequence"
+          },
+          "poll_after_ms": {
+            "type": "integer",
+            "title": "Poll After Ms"
+          },
+          "max_chunk_bytes": {
+            "type": "integer",
+            "title": "Max Chunk Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "state",
+          "next_sequence",
+          "poll_after_ms",
+          "max_chunk_bytes"
+        ],
+        "title": "LiveStartOut"
+      },
+      "LiveUtterance": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "start": {
+            "type": "number",
+            "title": "Start"
+          },
+          "end": {
+            "type": "number",
+            "title": "End"
+          },
+          "speaker_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker Label"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "is_final": {
+            "type": "boolean",
+            "title": "Is Final"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "start",
+          "end",
+          "speaker_label",
+          "text",
+          "is_final"
+        ],
+        "title": "LiveUtterance"
       },
       "LoginIn": {
         "properties": {
@@ -2359,6 +3097,17 @@
           "can_edit": {
             "type": "boolean",
             "title": "Can Edit"
+          },
+          "meeting_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Url"
           },
           "agenda": {
             "type": "string",
@@ -2526,6 +3275,17 @@
           "can_edit": {
             "type": "boolean",
             "title": "Can Edit"
+          },
+          "meeting_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meeting Url"
           }
         },
         "type": "object",
@@ -2665,6 +3425,11 @@
               }
             ],
             "title": "User Id"
+          },
+          "can_delete": {
+            "type": "boolean",
+            "title": "Can Delete",
+            "default": false
           },
           "voice_profile": {
             "$ref": "#/components/schemas/VoiceStatusOut"

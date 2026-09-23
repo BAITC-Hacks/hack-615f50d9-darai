@@ -135,6 +135,7 @@ class Meeting(Base):
     )
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    meeting_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -297,3 +298,33 @@ class Notification(Base):
     dedup_key: Mapped[str] = mapped_column(String(255), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LiveSession(Base):
+    """Browser recording session: ordered chunks of ONE MediaRecorder container."""
+
+    __tablename__ = "live_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_id)
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("meetings.id", ondelete="CASCADE"), index=True
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    source: Mapped[str] = mapped_column(String(16))
+    mime_type: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(16), default="recording")  # recording|finalizing|cancelled|error
+    local_path: Mapped[str] = mapped_column(String(1024))
+    next_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    received_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_hashes: Mapped[list] = mapped_column(JSONB, default=list)  # sha256 per sequence
+    preview_status: Mapped[str] = mapped_column(String(16), default="waiting")
+    preview_error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    preview_utterances: Mapped[list] = mapped_column(JSONB, default=list)
+    preview_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    processed_until_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    recording_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_chunk_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

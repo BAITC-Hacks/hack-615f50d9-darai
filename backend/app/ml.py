@@ -176,6 +176,10 @@ class ModelRegistry:
         return pipeline
 
 
+# One heavy CPU job at a time across the process: full processing waits for it,
+# live preview only tries it (and reports "waiting" when busy).
+compute_lock = threading.Lock()
+
 _registry: ModelRegistry | None = None
 _registry_lock = threading.Lock()
 

@@ -47,11 +47,36 @@ def voice_status(profile: VoiceProfile | None, info=None) -> VoiceStatusOut:
                           created_at=profile.created_at, consent_at=profile.consent_at)
 
 
-def employee_out(emp: Employee, info=None) -> EmployeeOut:
+def active_admin_count(db: Session) -> int:
+    return db.scalar(select(func.count()).select_from(User)
+                     .where(User.role == "admin", User.active.is_(True))) or 0
+
+
+def delete_denial(emp: Employee, current: CurrentUser | None, active_admins: int) -> tuple[int, str, str] | None:
+    """Why `current` may not archive `emp` (status, code, message), or None if allowed."""
+    if current is None or current.role not in ("admin", "secretary"):
+        return 403, "FORBIDDEN", "Удалять сотрудников может администратор или секретарь"
+    if current.employee_id == emp.id:
+        return 409, "SELF_DELETE_FORBIDDEN", "Нельзя удалить собственную карточку"
+    target = emp.user
+    if current.role == "secretary" and target is not None and target.role in ("secretary", "admin"):
+        return 403, "FORBIDDEN", "Секретарь может удалять только сотрудников без учётной записи или с ролью employee"
+    if target is not None and target.role == "admin" and target.active and active_admins <= 1:
+        return 409, "LAST_ADMIN", "Нельзя удалить последнего активного администратора"
+    return None
+
+
+def employee_out(emp: Employee, info=None, current: CurrentUser | None = None,
+                 active_admins: int | None = None) -> EmployeeOut:
+    can_delete = False
+    if current is not None and emp.active:
+        admins = active_admins if active_admins is not None else 2
+        can_delete = delete_denial(emp, current, admins) is None
     return EmployeeOut(
         id=emp.id, fio=emp.fio, position=emp.position, department=emp.department, active=emp.active,
         has_account=emp.user is not None and emp.user.active,
         user_id=emp.user.id if emp.user is not None else None,
+        can_delete=can_delete,
         voice_profile=voice_status(emp.voice_profile, info),
     )
 
@@ -158,6 +183,7 @@ def meeting_list_item(db: Session, meeting: Meeting, current: CurrentUser) -> Me
         participant_count=_participant_count(db, meeting.id),
         recording=recording_out(meeting.recording) if meeting.recording else None,
         can_edit=is_editor(meeting, current) and meeting.approval_status == "draft",
+        meeting_url=meeting.meeting_url,
     )
 
 

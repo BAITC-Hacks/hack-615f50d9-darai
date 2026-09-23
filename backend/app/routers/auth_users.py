@@ -118,8 +118,11 @@ def _issue_temporary(db: Session, user: User) -> str:
 
 @users.post("", response_model=UserWithTemporaryPassword, status_code=201)
 def create_user(body: UserCreate, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
-    if db.get(Employee, body.employee_id) is None:
+    emp = db.scalar(select(Employee).where(Employee.id == body.employee_id).with_for_update())
+    if emp is None:
         raise not_found("Сотрудник")
+    if not emp.active:
+        raise conflict("EMPLOYEE_ARCHIVED", "Сотрудник удалён (архивирован)")
     if db.scalar(select(User.id).where(User.login == body.login)) is not None:
         raise conflict("LOGIN_TAKEN", "Логин уже занят")
     if db.scalar(select(User.id).where(User.employee_id == body.employee_id)) is not None:
@@ -159,6 +162,10 @@ def patch_user(user_id: str, body: UserPatch, current: CurrentUser = Depends(req
         raise ApiError(409, "CONFLICT", "Нельзя снять права администратора или деактивировать себя")
     if body.role is not None:
         user.role = body.role
+    if body.active and user.employee_id is not None:
+        emp = db.scalar(select(Employee).where(Employee.id == user.employee_id).with_for_update())
+        if emp is not None and not emp.active:
+            raise conflict("EMPLOYEE_ARCHIVED", "Сотрудник удалён (архивирован): доступ не восстанавливается")
     if body.active is not None:
         user.active = body.active
         if not body.active:

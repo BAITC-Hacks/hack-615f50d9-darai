@@ -139,7 +139,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> Current
     if sess is None or sess.expires_at <= now:
         raise ApiError(401, "UNAUTHENTICATED", "Сессия истекла")
     user = db.get(User, sess.user_id)
-    if user is None or not user.active:
+    if user is None or not user.active or (user.employee is not None and not user.employee.active):
         raise ApiError(401, "UNAUTHENTICATED", "Учётная запись недоступна")
     if request.method not in _SAFE_METHODS:
         header = request.headers.get(CSRF_HEADER, "")

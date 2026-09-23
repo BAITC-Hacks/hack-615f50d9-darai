@@ -37,6 +37,8 @@ export interface VoiceProfile {
   consent_at: string | null;
 }
 export interface Employee extends EmployeeRef {
+  /** Old servers omit this field: the UI must deny deletion by default. */
+  can_delete?: boolean;
   active: boolean;
   has_account: boolean;
   user_id: ID | null;
@@ -126,6 +128,7 @@ export interface Task {
   updated_at: string;
 }
 export interface MeetingListItem {
+  meeting_url?: string | null;
   id: ID;
   title: string;
   starts_at: string;

@@ -27,6 +27,7 @@ os.environ.update({
     "ADMIN_PASSWORD": "admin-pass-1",
     "LLM_MODEL": "test-model",
     "SESSION_TTL_HOURS": "1",
+    "LIVE_PREVIEW_MIN_NEW_BYTES": "2000",
 })
 
 

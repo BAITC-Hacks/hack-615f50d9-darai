@@ -70,7 +70,7 @@ export async function request<T>(
   options: RequestInit = {},
 ): Promise<T> {
   const headers = new Headers(options.headers);
-  if (options.body && !(options.body instanceof FormData))
+  if (typeof options.body === "string" && !headers.has("Content-Type"))
     headers.set("Content-Type", "application/json");
   if (options.method && options.method !== "GET" && path !== "/auth/login")
     headers.set("X-CSRF-Token", csrfToken);
@@ -195,6 +195,8 @@ export const api = {
       id ? `/employees/${encodeURIComponent(id)}` : "/employees",
       json(id ? "PATCH" : "POST", body),
     ),
+  deleteEmployee: (id: string) =>
+    request<void>(`/employees/${encodeURIComponent(id)}`, json("DELETE")),
   deleteVoice: (id: string) =>
     request<void>(`/employees/${id}/voice`, json("DELETE")),
   meetings: (q = "", offset = 0, signal?: AbortSignal) =>

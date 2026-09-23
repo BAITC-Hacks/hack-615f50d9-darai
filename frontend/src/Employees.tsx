@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useLocation,
+  useSearchParams,
+} from "react-router-dom";
 import { api, ApiError, upload } from "./api";
 import type { Employee, EmployeeInput, Role } from "./types";
 import { useUser } from "./App";
@@ -16,6 +22,7 @@ import {
   useResource,
 } from "./ui";
 import { AccountFields, AccessDialog } from "./Access";
+import { DeleteEmployeeDialog } from "./DeleteEmployeeDialog";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { dateTime } from "./utils";
 export const voiceLabels = {
@@ -59,13 +66,37 @@ export function Pagination({
 }
 export function Employees() {
   const user = useUser();
-  const [q, setQ] = useState("");
-  const [search, setSearch] = useState("");
-  const [offset, setOffset] = useState(0);
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const search = params.get("q") || "";
+  const rawOffset = Number(params.get("offset") || 0);
+  const offset =
+    Number.isSafeInteger(rawOffset) && rawOffset >= 0
+      ? Math.floor(rawOffset / 50) * 50
+      : 0;
+  const [q, setQ] = useState(search);
+  const [deleting, setDeleting] = useState<Employee | null>(null);
+  const [notice, setNotice] = useState<{
+    message: string;
+    kind: "success" | "warning";
+  } | null>(location.state?.employeeNotice || null);
+  const setOffset = (value: number) =>
+    setParams(
+      {
+        ...(search ? { q: search } : {}),
+        ...(value ? { offset: String(value) } : {}),
+      },
+      { replace: true },
+    );
+  useEffect(() => setQ(search), [search]);
   const r = useResource(
     (signal) => api.employees(search, offset, signal),
     `${search}:${offset}`,
   );
+  useEffect(() => {
+    if (r.data && offset > 0 && offset >= r.data.total)
+      setOffset(Math.max(0, Math.floor((r.data.total - 1) / 50) * 50));
+  }, [r.data, offset, search]);
   return (
     <>
       <PageTitle
@@ -83,8 +114,7 @@ export function Employees() {
         className="toolbar"
         onSubmit={(e) => {
           e.preventDefault();
-          setSearch(q);
-          setOffset(0);
+          setParams(q ? { q } : {});
         }}
       >
         <input
@@ -95,6 +125,7 @@ export function Employees() {
         />
         <button className="secondary">Найти</button>
       </form>
+      {notice && <Notice kind={notice.kind}>{notice.message}</Notice>}
       <ResourceState resource={r} />
       {r.data && (
         <section className="panel flush">
@@ -111,6 +142,9 @@ export function Employees() {
                     <th>Департамент</th>
                     <th>Голосовой профиль</th>
                     <th>Учётная запись</th>
+                    <th>
+                      <span className="sr-only">Действия</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -120,7 +154,13 @@ export function Employees() {
                         <div className="cell-person">
                           <span className="avatar">{e.fio.slice(0, 1)}</span>
                           <div>
-                            <Link to={`/employees/${e.id}`}>
+                            <Link
+                              to={`/employees/${e.id}`}
+                              state={{
+                                employeeListUrl:
+                                  location.pathname + location.search,
+                              }}
+                            >
                               <strong>{e.fio}</strong>
                             </Link>
                             <small>{e.position}</small>
@@ -142,6 +182,21 @@ export function Employees() {
                         </Badge>
                       </td>
                       <td>{e.has_account ? "Есть доступ" : "Без аккаунта"}</td>
+                      <td>
+                        {e.can_delete === true && (
+                          <button
+                            type="button"
+                            className="danger"
+                            aria-label={`Удалить сотрудника ${e.fio}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDeleting(e);
+                            }}
+                          >
+                            Удалить
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -163,11 +218,46 @@ export function Employees() {
           />
         </section>
       )}
+      {deleting && (
+        <DeleteEmployeeDialog
+          employee={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => {
+            setDeleting(null);
+            setNotice({
+              kind: "success",
+              message: `Сотрудник «${deleting.fio}» удалён из активного справочника. История сохранена.`,
+            });
+            r.reload();
+          }}
+          onUnavailable={() => {
+            setNotice({
+              kind: "warning",
+              message: "Сотрудник больше недоступен.",
+            });
+            r.reload();
+          }}
+        />
+      )}
     </>
   );
 }
 export function EmployeeDetail() {
   const { id } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [deleting, setDeleting] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const returnTo =
+    typeof location.state?.employeeListUrl === "string" &&
+    /^\/employees(?:\?|$)/.test(location.state.employeeListUrl)
+      ? location.state.employeeListUrl
+      : "/employees";
+  const returnToList = (message: string, kind: "success" | "warning") =>
+    navigate(returnTo, {
+      replace: true,
+      state: { employeeNotice: { message, kind } },
+    });
   const user = useUser();
   const r = useResource(
     (signal) => (id ? api.employee(id, signal) : Promise.resolve(null)),
@@ -181,13 +271,41 @@ export function EmployeeDetail() {
     );
   return (
     <>
-      <Back to="/employees">Сотрудники</Back>
+      <div className="toolbar">
+        <Back to={returnTo}>Сотрудники</Back>
+        {r.data?.can_delete === true && (
+          <button
+            type="button"
+            className="danger"
+            onClick={() => setDeleting(true)}
+          >
+            Удалить сотрудника
+          </button>
+        )}
+      </div>
       <ResourceState resource={r} />
       {!r.loading && !r.error && (
         <EmployeeForm
           key={id || "new"}
           employee={r.data || null}
           onUpdate={(e) => r.setData(e)}
+        />
+      )}
+      {deleting && r.data && (
+        <DeleteEmployeeDialog
+          employee={r.data}
+          onClose={() => {
+            setDeleting(false);
+            if (unavailable)
+              returnToList("Сотрудник больше недоступен.", "warning");
+          }}
+          onDeleted={() =>
+            returnToList(
+              `Сотрудник «${r.data!.fio}» удалён из активного справочника. История сохранена.`,
+              "success",
+            )
+          }
+          onUnavailable={() => setUnavailable(true)}
         />
       )}
     </>

@@ -1,6 +1,6 @@
 # DARAI — контракт HTTP API (backend ↔ frontend)
 
-Версия контракта: **1.1.0** (зафиксирована 2026-09-23; 1.0.1 — только дополнительные значения перечислений, см. «Журнал изменений»). Изменения — только по согласованию backend- и frontend-агентов, с обновлением этого файла и `backend/openapi.json`.
+Версия контракта: **1.3.0** (зафиксирована 2026-09-23; 1.0.1 — только дополнительные значения перечислений, см. «Журнал изменений»). Изменения — только по согласованию backend- и frontend-агентов, с обновлением этого файла и `backend/openapi.json`.
 
 Источник требований: `docs/DEVELOPMENT_PLAN.md` §4. Машиночитаемая схема после реализации — `backend/openapi.json` (экспорт FastAPI). При расхождении этот документ описывает намерение, OpenAPI — фактические типы; расхождение считается ошибкой и исправляется.
 
@@ -83,7 +83,7 @@
 | 503 | `EXPORT_UNAVAILABLE` | Нет LibreOffice для PDF |
 | 500 | `INTERNAL_ERROR` | Непредвиденная ошибка; содержимое не раскрывается |
 
-Специфичные коды 409: `LOGIN_TAKEN`, `EMPLOYEE_HAS_ACCOUNT`, `MEETING_CONFIRMED`, `RECORDING_PROCESSING`, `RECORDING_NOT_READY`, `RETRY_NOT_ALLOWED`, `DRAFT_REVISION_MISMATCH`, `ALREADY_CONFIRMED`, `CONFIRMATION_REQUIRES_ACKNOWLEDGEMENT`, `PARTICIPANT_IN_USE`, `TASK_NOT_CONFIRMED`.
+Специфичные коды 409: `SELF_DELETE_FORBIDDEN`, `LAST_ADMIN`, `EMPLOYEE_ARCHIVED`, `LOGIN_TAKEN`, `EMPLOYEE_HAS_ACCOUNT`, `MEETING_CONFIRMED`, `RECORDING_PROCESSING`, `RECORDING_NOT_READY`, `RETRY_NOT_ALLOWED`, `DRAFT_REVISION_MISMATCH`, `ALREADY_CONFIRMED`, `CONFIRMATION_REQUIRES_ACKNOWLEDGEMENT`, `PARTICIPANT_IN_USE`, `TASK_NOT_CONFIRMED`.
 
 ### Пагинация
 
@@ -219,6 +219,7 @@ Employee:
   "active": true,
   "has_account": true,
   "user_id": "0f7c...",
+  "can_delete": false,
   "voice_profile": {
     "status": "ok",
     "quality_status": "ok",
@@ -245,8 +246,25 @@ Employee:
 | `POST /employees` | admin | `{"fio": "...", "position": "...", "department": "..."}` (каждое 1–255 символов) | `201` Employee |
 | `PATCH /employees/{id}` | admin | любые из `{"fio", "position", "department", "active"}` | `200` Employee |
 | `GET /employees/me` | любой вошедший с привязанным сотрудником | — | `200` MyProfile; `404`, если у учётной записи нет сотрудника |
+| `DELETE /employees/{id}` | admin, secretary | — | `204` (в т.ч. повторно для уже архивированного); см. «Удаление сотрудника» |
 | `POST /employees/{id}/voice` | admin или сам сотрудник | multipart, см. ниже | `201` VoiceEnrollment |
 | `DELETE /employees/{id}/voice` | admin или сам сотрудник | — | `204`; `404` если профиля нет |
+
+### Удаление сотрудника
+
+`DELETE /employees/{employee_id}` — кнопка «Удалить», операция **архивирует** сотрудника. Cookie-сессия + `X-CSRF-Token`, тела нет.
+
+- `204 No Content`; повторное удаление архивированного — тоже `204`. Неизвестный ID — `404 NOT_FOUND`.
+- `403 FORBIDDEN`: роль `employee`; секретарь удаляет сотрудника, чья учётная запись имеет роль `secretary` или `admin`.
+- `409 SELF_DELETE_FORBIDDEN`: удаление собственной карточки.
+- `409 LAST_ADMIN`: удаление последнего активного администратора.
+- Одной транзакцией: `active=false`, учётная запись деактивируется, все её сессии отзываются (старые cookie → `401`).
+- Сотрудник исчезает из `GET /employees` (по умолчанию `active=true`; `total`/пагинация учитывают фильтр), его нельзя выбрать участником новой встречи или добавить в участники (`422 VALIDATION_ERROR`), выдать ему учётную запись или зарегистрировать голос (`409 EMPLOYEE_ARCHIVED`), реактивировать его учётную запись через `PATCH /users/{id}` (`409 EMPLOYEE_ARCHIVED`).
+- Голосовой профиль сохраняется, но исключается из автоматической идентификации.
+- Исторические встречи, участники, спикеры, протоколы и поручения не изменяются; поручения не закрываются и не переназначаются. Карточка по ID (`GET /employees/{id}`) и данные встреч продолжают показывать архивированного сотрудника (`active: false`).
+- Физическое удаление аудио и биометрических данных не выполняется.
+
+`can_delete` в Employee/MyProfile вычисляет сервер для текущего пользователя: admin — любого другого (кроме последнего активного admin); secretary — сотрудника без аккаунта или с ролью `employee`; employee — никогда; собственная карточка — никогда; уже архивированный — `false`. Сервер проверяет права независимо от поля.
 
 MyProfile = Employee + `"login"`:
 
@@ -689,5 +707,7 @@ Notification:
 | Версия | Дата | Изменение | Совместимость |
 | --- | --- | --- | --- |
 | 1.0 | 2026-09-23 | Первая фиксация | — |
+| 1.3.0 | 2026-09-23 | Live-запись из браузера и `meeting_url` (`PATCH /meetings/{id}/link`) — см. `docs/LIVE_CONTRACT.md` | Добавочно: новое необязательное поле `meeting_url` во встрече |
+| 1.2.0 | 2026-09-23 | `DELETE /employees/{id}` (архивирование), `can_delete` в Employee, коды `SELF_DELETE_FORBIDDEN`, `LAST_ADMIN`, `EMPLOYEE_ARCHIVED` | Добавочно |
 | 1.1.0 | 2026-09-23 | Учётные записи: `must_change_password`, `POST /auth/change-password`, `POST /users/{id}/reset-password`, временный пароль генерирует backend (`password` убран из `POST/PATCH /users`), `403 PASSWORD_CHANGE_REQUIRED`, `GET /employees/me`, `me` в `/employees/{id}/voice`, `Cache-Control: no-store` | `/users` frontend не использует; новые поля пользователя — добавочные; frontend должен обработать `must_change_password` и `PASSWORD_CHANGE_REQUIRED` |
 | 1.0.1 | 2026-09-23 | Добавлены значения `Speaker.review_reasons: split_cluster_suspected` и `Task.review_reasons: deadline_before_meeting` (их выдаёт AI-пайплайн, см. `docs/AI_CONTRACT.md`) | Обратно совместимо: поля — массивы строк, форма ответов не изменилась |

@@ -39,7 +39,7 @@ from .config import Settings, get_settings
 from .diarize import DiarizationResult, diarize
 from .extract import run_extraction
 from .llm import LLMClient
-from .ml import ModelRegistry, ModelUnavailable, get_registry
+from .ml import ModelRegistry, ModelUnavailable, compute_lock, get_registry
 from .voice import (
     clean_segments,
     embed_regions,
@@ -188,6 +188,11 @@ class AIPipeline:
     # ------------------------------------------------------------ recording
 
     def process_recording(self, req: ProcessRequest) -> ProcessResult:
+        # Waits for a running live preview window; see ml.compute_lock.
+        with compute_lock:
+            return self._process_recording(req)
+
+    def _process_recording(self, req: ProcessRequest) -> ProcessResult:
         s = self.settings
         timings: list[StageTiming] = []
 

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from . import ai_gateway
 from .config import get_settings
 from .db import db_session
-from .models import Meeting, Recording, Speaker, Task, Utterance, VoiceProfile, utcnow
+from .models import Employee, Meeting, Recording, Speaker, Task, Utterance, VoiceProfile, utcnow
 from .notifications import notify_processing_result
 from .serializers import profile_compatible
 
@@ -118,7 +118,8 @@ def _candidates(db: Session, meeting: Meeting):
     ids = [p.employee_id for p in meeting.participants]
     if not ids:
         return []
-    profiles = db.scalars(select(VoiceProfile).where(VoiceProfile.employee_id.in_(ids))).all()
+    profiles = db.scalars(select(VoiceProfile).join(Employee, Employee.id == VoiceProfile.employee_id)
+                          .where(VoiceProfile.employee_id.in_(ids), Employee.active.is_(True))).all()
     return [T.VoiceCandidate(employee_id=p.employee_id, vector=[float(x) for x in p.vector])
             for p in profiles if profile_compatible(p, info)]
 

@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     max_audio_seconds: int = Field(3 * 3600, ge=1)
     ffmpeg_timeout_seconds: int = Field(900, ge=5)
 
+    # --- live recording ---
+    live_max_chunk_bytes: int = Field(5 * 1024 * 1024, ge=1024)
+    live_idle_timeout_seconds: int = Field(120, ge=10)
+    live_poll_after_ms: int = Field(2000, ge=250)
+    live_preview_min_new_bytes: int = Field(48000, ge=1)  # coalesce preview updates (~6 s of opus)
+    live_preview_enabled: bool = True
+
     # --- jobs ---
     max_concurrent_jobs: int = Field(1, ge=1, le=4)
     preload_models: bool = False

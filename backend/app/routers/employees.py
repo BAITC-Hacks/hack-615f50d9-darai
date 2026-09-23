@@ -9,13 +9,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from .. import ai_gateway
 from ..access import parse_uuid
-from ..auth import CurrentUser, get_current_user, require_admin
+from ..auth import CurrentUser, get_current_user, require_admin, require_roles, revoke_user_sessions
 from ..config import get_settings
 from ..db import get_db
 from ..errors import ApiError, forbidden, not_found
-from ..models import Employee, VoiceProfile, utcnow
+from ..models import Employee, User, VoiceProfile, utcnow
 from ..schemas import EmployeeCreate, EmployeeOut, EmployeePatch, MyProfileOut, Page, VoiceEnrollmentOut
-from ..serializers import employee_out
+from ..serializers import active_admin_count, delete_denial, employee_out
 from ..uploads import check_audio, remove_tree, safe_suffix, save_upload
 
 log = logging.getLogger("darai.voice")
@@ -34,7 +34,7 @@ def _get(db: Session, employee_id: str) -> Employee:
 def list_employees(q: str | None = None, department: str | None = None,
                    active: str = Query("true", pattern="^(true|false|all)$"),
                    limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
-                   _: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+                   current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     stmt = select(Employee)
     if active != "all":
         stmt = stmt.where(Employee.active.is_(active == "true"))
@@ -48,7 +48,9 @@ def list_employees(q: str | None = None, department: str | None = None,
     rows = db.scalars(stmt.options(selectinload(Employee.user), selectinload(Employee.voice_profile))
                       .order_by(Employee.fio, Employee.id).limit(limit).offset(offset)).all()
     info = ai_gateway.voice_model_info()
-    return Page[EmployeeOut](items=[employee_out(e, info) for e in rows], total=total, limit=limit, offset=offset)
+    admins = active_admin_count(db)
+    return Page[EmployeeOut](items=[employee_out(e, info, current, admins) for e in rows],
+                             total=total, limit=limit, offset=offset)
 
 
 def _resolve(employee_id: str, current: CurrentUser) -> str:
@@ -63,24 +65,26 @@ def _resolve(employee_id: str, current: CurrentUser) -> str:
 @router.get("/me", response_model=MyProfileOut)
 def my_profile(current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     emp = _get(db, _resolve("me", current))
-    return MyProfileOut(**employee_out(emp).model_dump(), login=current.user.login)
+    return MyProfileOut(**employee_out(emp, None, current, active_admin_count(db)).model_dump(),
+                        login=current.user.login)
 
 
 @router.get("/{employee_id}", response_model=EmployeeOut)
-def get_employee(employee_id: str, _: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    return employee_out(_get(db, employee_id))
+def get_employee(employee_id: str, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    return employee_out(_get(db, employee_id), None, current, active_admin_count(db))
 
 
 @router.post("", response_model=EmployeeOut, status_code=201)
-def create_employee(body: EmployeeCreate, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+def create_employee(body: EmployeeCreate, current: CurrentUser = Depends(require_admin),
+                    db: Session = Depends(get_db)):
     emp = Employee(fio=body.fio.strip(), position=body.position.strip(), department=body.department.strip())
     db.add(emp)
     db.commit()
-    return employee_out(_get(db, str(emp.id)))
+    return employee_out(_get(db, str(emp.id)), None, current, active_admin_count(db))
 
 
 @router.patch("/{employee_id}", response_model=EmployeeOut)
-def patch_employee(employee_id: str, body: EmployeePatch, _: CurrentUser = Depends(require_admin),
+def patch_employee(employee_id: str, body: EmployeePatch, current: CurrentUser = Depends(require_admin),
                    db: Session = Depends(get_db)):
     emp = _get(db, employee_id)
     for field in ("fio", "position", "department"):
@@ -90,7 +94,40 @@ def patch_employee(employee_id: str, body: EmployeePatch, _: CurrentUser = Depen
     if body.active is not None:
         emp.active = body.active
     db.commit()
-    return employee_out(_get(db, employee_id))
+    return employee_out(_get(db, employee_id), None, current, active_admin_count(db))
+
+
+@router.delete("/{employee_id}", status_code=204, response_class=Response,
+               responses={403: {"description": "FORBIDDEN"}, 404: {"description": "NOT_FOUND"},
+                          409: {"description": "SELF_DELETE_FORBIDDEN | LAST_ADMIN"}})
+def delete_employee(employee_id: str, current: CurrentUser = Depends(require_roles("admin", "secretary")),
+                    db: Session = Depends(get_db)):
+    """«Удалить» = archive: employee inactive, account deactivated, sessions revoked — one transaction.
+    History (meetings, speakers, tasks, voice profile row) is kept; the voice profile is
+    excluded from matching because matching only uses active employees."""
+    eid = parse_uuid(employee_id, "Сотрудник")
+    # Lock admins first (stable order) so two concurrent admin deletions cannot both pass LAST_ADMIN.
+    db.execute(select(User.id).where(User.role == "admin", User.active.is_(True)).order_by(User.id).with_for_update())
+    emp = db.scalar(select(Employee).where(Employee.id == eid).with_for_update())
+    if emp is None:
+        raise not_found("Сотрудник")
+    denial = delete_denial(emp, current, active_admin_count(db))
+    if denial is not None and not (denial[1] == "LAST_ADMIN" and not emp.active):
+        raise ApiError(*denial)
+    emp.active = False
+    user = db.scalar(select(User).where(User.employee_id == emp.id).with_for_update())
+    if user is not None:
+        user.active = False
+        revoke_user_sessions(db, user.id)
+    db.commit()
+    return Response(status_code=204)
+
+
+def _lock_active_employee(db: Session, emp: Employee) -> None:
+    """Serialize with DELETE /employees/{id}: refuse changes for archived employees."""
+    locked = db.scalar(select(Employee).where(Employee.id == emp.id).with_for_update())
+    if locked is None or not locked.active:
+        raise ApiError(409, "EMPLOYEE_ARCHIVED", "Сотрудник удалён (архивирован)")
 
 
 def _check_voice_access(emp: Employee, current: CurrentUser) -> None:
@@ -103,6 +140,8 @@ def enroll_voice(employee_id: str, file: UploadFile = File(...), consent: str = 
                  current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     emp = _get(db, _resolve(employee_id, current))
     _check_voice_access(emp, current)
+    if not emp.active:
+        raise ApiError(409, "EMPLOYEE_ARCHIVED", "Сотрудник удалён (архивирован)")
     if consent.strip().lower() != "true":
         raise ApiError(422, "VALIDATION_ERROR", "Требуется согласие на обработку голосового профиля",
                        {"fields": [{"loc": ["body", "consent"], "msg": "must be true"}]})
@@ -133,6 +172,7 @@ def enroll_voice(employee_id: str, file: UploadFile = File(...), consent: str = 
     finally:
         remove_tree(work_dir)  # the raw sample is never kept
 
+    _lock_active_employee(db, emp)  # archived while the embedding was computed -> refuse
     now = utcnow()
     profile = db.get(VoiceProfile, emp.id)
     if profile is None:

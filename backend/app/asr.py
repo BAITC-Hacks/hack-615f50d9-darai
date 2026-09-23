@@ -29,6 +29,7 @@ class AsrSegment:
     text: str
     language: str | None
     words: list[Word] = field(default_factory=list)
+    no_speech_prob: float | None = None
 
 
 @dataclass
@@ -70,8 +71,12 @@ SAMPLE_RATE = 16000
 def transcribe(model, samples: np.ndarray, *, language: str | None = None, beam_size: int = 5,
                multilingual: bool = True, vad_filter: bool = True,
                is_cancelled=None, allowed_languages: list[str] | None = None,
-               min_language_prob: float = 0.5) -> AsrResult:
+               min_language_prob: float = 0.5,
+               hallucination_silence_threshold: float | None = None) -> AsrResult:
     """``samples``: float32 mono 16 kHz. Blocking; call outside the event loop."""
+    extra = {}
+    if hallucination_silence_threshold:
+        extra["hallucination_silence_threshold"] = hallucination_silence_threshold
     segments_iter, info = model.transcribe(
         samples,
         task="transcribe",
@@ -81,6 +86,7 @@ def transcribe(model, samples: np.ndarray, *, language: str | None = None, beam_
         word_timestamps=True,
         vad_filter=vad_filter,
         condition_on_previous_text=False,  # limits hallucination loops on long files
+        **extra,
     )
     segments: list[AsrSegment] = []
     file_lang = getattr(info, "language", None)
@@ -90,7 +96,8 @@ def transcribe(model, samples: np.ndarray, *, language: str | None = None, beam_
         words = [Word(float(w.start), float(w.end), w.word) for w in (seg.words or [])
                  if w.word and w.word.strip() and w.end > w.start]
         seg_lang = getattr(seg, "language", None) or file_lang
-        segments.append(AsrSegment(float(seg.start), float(seg.end), seg.text.strip(), seg_lang, words))
+        segments.append(AsrSegment(float(seg.start), float(seg.end), seg.text.strip(), seg_lang, words,
+                                   getattr(seg, "no_speech_prob", None)))
     result = AsrResult(segments=segments, language=file_lang,
                        language_probability=getattr(info, "language_probability", None))
     if multilingual and language is None and allowed_languages:

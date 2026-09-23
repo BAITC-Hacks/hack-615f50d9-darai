@@ -1,3 +1,5 @@
+import { MeetingLiveRecorder } from "./MeetingLiveRecorder";
+import { liveApi } from "./live-api";
 import {
   useCallback,
   useEffect,
@@ -966,6 +968,10 @@ function RecordingPanel({
   dirty: boolean;
 }) {
   const [file, setFile] = useState<File | null>(null);
+  const [inputMode, setInputMode] = useState("upload");
+  const [capturing, setCapturing] = useState(false);
+  const [meetingUrl, setMeetingUrl] = useState(m.meeting_url || "");
+  const [replaceLive, setReplaceLive] = useState(false);
   const [replace, setReplace] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pollError, setPollError] = useState("");
@@ -1072,12 +1078,90 @@ function RecordingPanel({
       )}
       {m.permissions.can_edit && m.approval_status === "draft" && (
         <>
+          <Field label="Ссылка на онлайн-встречу (необязательно)">
+            <input
+              type="url"
+              value={meetingUrl}
+              onChange={(e) => setMeetingUrl(e.target.value)}
+              placeholder="https://…"
+            />
+          </Field>
+          <div className="form-actions">
+            <button
+              className="secondary"
+              disabled={action.busy}
+              onClick={() =>
+                void action.run(async () => {
+                  const value = meetingUrl.trim();
+                  if (value && !/^https?:\/\//i.test(value))
+                    throw new Error("Укажите ссылку http:// или https://");
+                  await liveApi.link(m.id, value || null);
+                  await refresh();
+                }, "Ссылка сохранена")
+              }
+            >
+              Сохранить ссылку
+            </button>
+            {/^(https?):\/\//i.test(meetingUrl.trim()) && (
+              <a
+                href={meetingUrl.trim()}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Открыть внешнюю встречу
+              </a>
+            )}
+          </div>
+          <div className="form-actions" aria-label="Способ добавления записи">
+            <button
+              className="secondary"
+              aria-pressed={inputMode === "record"}
+              disabled={capturing || action.busy}
+              onClick={() => setInputMode("record")}
+            >
+              Записать сейчас
+            </button>
+            <button
+              className="secondary"
+              aria-pressed={inputMode === "upload"}
+              disabled={capturing || action.busy}
+              onClick={() => setInputMode("upload")}
+            >
+              Загрузить файл
+            </button>
+          </div>
+          {inputMode === "record" && (
+            <>
+              {live && (
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    disabled={capturing}
+                    checked={replaceLive}
+                    onChange={(e) => setReplaceLive(e.target.checked)}
+                  />
+                  Заменить запись и предыдущий черновой протокол
+                </label>
+              )}
+              <MeetingLiveRecorder
+                id={m.id}
+                disabled={
+                  dirty ||
+                  live?.processing_status === "processing" ||
+                  (!!live && !replaceLive)
+                }
+                refresh={refresh}
+                onActive={setCapturing}
+              />
+            </>
+          )}
+
           {live &&
             (live.processing_status === "error" ||
               live.extraction.status === "error") && (
               <button
                 className="secondary"
-                disabled={action.busy || dirty}
+                disabled={action.busy || dirty || capturing}
                 onClick={() =>
                   void action.run(async () => {
                     await api.retry(m.id, live.id);
@@ -1091,77 +1175,82 @@ function RecordingPanel({
                   : "обработку"}
               </button>
             )}
-          {live?.processing_status !== "processing" && (
-            <div className="recording-box" style={{ marginTop: 16 }}>
-              <Field
-                label={live ? "Заменить запись" : "Загрузить запись совещания"}
-                hint="Аудио или видео с аудиодорожкой. Ограничения размера и длительности проверяет сервер."
-              >
-                <input
-                  type="file"
-                  accept="audio/*,video/*,.m4a,.mkv"
-                  disabled={action.busy}
-                  onChange={(e) => {
-                    setFile(e.target.files?.[0] || null);
-                    setReplace(false);
-                  }}
-                />
-              </Field>
-              {file && (
-                <p className="filesize">
-                  {file.name} · {(file.size / 1024 / 1024).toFixed(1)} МБ
-                </p>
-              )}
-              {live && file && (
-                <label className="check">
+          {inputMode === "upload" &&
+            live?.processing_status !== "processing" && (
+              <div className="recording-box" style={{ marginTop: 16 }}>
+                <Field
+                  label={
+                    live ? "Заменить запись" : "Загрузить запись совещания"
+                  }
+                  hint="Аудио или видео с аудиодорожкой. Ограничения размера и длительности проверяет сервер."
+                >
                   <input
-                    type="checkbox"
-                    checked={replace}
-                    onChange={(e) => setReplace(e.target.checked)}
+                    type="file"
+                    accept="audio/*,video/*,.m4a,.mkv"
+                    disabled={action.busy}
+                    onChange={(e) => {
+                      setFile(e.target.files?.[0] || null);
+                      setReplace(false);
+                    }}
                   />
-                  Заменить запись и удалить предыдущий транскрипт, саммари,
-                  спикеров и все черновые поручения.
-                </label>
-              )}
-              <button
-                disabled={!file || action.busy || dirty || (!!live && !replace)}
-                onClick={() =>
-                  void action.run(async () => {
-                    if (!file) return;
-                    setProgress(0);
-                    controller.current = new AbortController();
-                    await upload<RecordingStatus>(
-                      `/meetings/${m.id}/recordings`,
-                      file,
-                      setProgress,
-                      controller.current.signal,
-                    );
-                    setFile(null);
-                    await refresh();
-                  }, "Запись загружена. Обработка выполняется локально.")
-                }
-              >
-                {action.busy ? "Загружаем запись…" : "Загрузить и обработать"}
-              </button>
-              {action.busy && (
-                <>
-                  <progress
-                    className="progress"
-                    value={progress}
-                    max={100}
-                    aria-label="Загрузка записи"
-                  />
-                  <p role="status">
-                    <small>
-                      {progress < 100
-                        ? `Загружено ${progress}%`
-                        : "Файл передан. Сервер проверяет запись…"}
-                    </small>
+                </Field>
+                {file && (
+                  <p className="filesize">
+                    {file.name} · {(file.size / 1024 / 1024).toFixed(1)} МБ
                   </p>
-                </>
-              )}
-            </div>
-          )}
+                )}
+                {live && file && (
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={replace}
+                      onChange={(e) => setReplace(e.target.checked)}
+                    />
+                    Заменить запись и удалить предыдущий транскрипт, саммари,
+                    спикеров и все черновые поручения.
+                  </label>
+                )}
+                <button
+                  disabled={
+                    !file || action.busy || dirty || (!!live && !replace)
+                  }
+                  onClick={() =>
+                    void action.run(async () => {
+                      if (!file) return;
+                      setProgress(0);
+                      controller.current = new AbortController();
+                      await upload<RecordingStatus>(
+                        `/meetings/${m.id}/recordings`,
+                        file,
+                        setProgress,
+                        controller.current.signal,
+                      );
+                      setFile(null);
+                      await refresh();
+                    }, "Запись загружена. Обработка выполняется локально.")
+                  }
+                >
+                  {action.busy ? "Загружаем запись…" : "Загрузить и обработать"}
+                </button>
+                {action.busy && (
+                  <>
+                    <progress
+                      className="progress"
+                      value={progress}
+                      max={100}
+                      aria-label="Загрузка записи"
+                    />
+                    <p role="status">
+                      <small>
+                        {progress < 100
+                          ? `Загружено ${progress}%`
+                          : "Файл передан. Сервер проверяет запись…"}
+                      </small>
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
         </>
       )}
       <ActionStatus action={action} />

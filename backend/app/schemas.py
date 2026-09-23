@@ -142,6 +142,7 @@ class EmployeeOut(BaseModel):
     active: bool
     has_account: bool
     user_id: uuid.UUID | None
+    can_delete: bool = False
     voice_profile: VoiceStatusOut
 
 
@@ -167,11 +168,19 @@ class MeetingCreate(Strict):
     agenda: str = Field(default="", max_length=20000)
     participant_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
     secretary_id: uuid.UUID | None = None
+    meeting_url: str | None = Field(default=None, max_length=2000)
 
     @field_validator("timezone")
     @classmethod
     def _timezone(cls, v):
         return _tz(v)
+
+    @field_validator("meeting_url")
+    @classmethod
+    def _meeting_url(cls, v):
+        from .live_routes import validate_meeting_url
+
+        return validate_meeting_url(v)
 
     @field_validator("agenda", mode="before")
     @classmethod
@@ -304,6 +313,7 @@ class MeetingListItemOut(BaseModel):
     participant_count: int
     recording: RecordingOut | None
     can_edit: bool
+    meeting_url: str | None = None
 
 
 class MeetingDetailOut(MeetingListItemOut):

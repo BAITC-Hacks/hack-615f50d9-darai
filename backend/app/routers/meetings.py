@@ -65,7 +65,9 @@ def _active_employees(db: Session, ids: list[uuid.UUID]) -> list[Employee]:
     unique = list(dict.fromkeys(ids))
     if not unique:
         return []
-    found = db.scalars(select(Employee).where(Employee.id.in_(unique), Employee.active.is_(True))).all()
+    # FOR SHARE: a concurrent archive (FOR UPDATE) waits or makes this check fail.
+    found = db.scalars(select(Employee).where(Employee.id.in_(unique), Employee.active.is_(True))
+                       .with_for_update(read=True)).all()
     if len(found) != len(unique):
         raise validation("Неизвестный или неактивный сотрудник в participant_ids", ["body", "participant_ids"])
     return list(found)
@@ -91,7 +93,8 @@ def _create_meeting(db: Session, current: CurrentUser, data: MeetingCreate) -> M
     employees = _active_employees(db, data.participant_ids)
     secretary = _secretary(db, data.secretary_id, current)
     meeting = Meeting(title=data.title.strip(), agenda=data.agenda, starts_at=_to_utc(data.starts_at, data.timezone),
-                      timezone=data.timezone, organizer_id=current.id, secretary_id=secretary.id)
+                      timezone=data.timezone, organizer_id=current.id, secretary_id=secretary.id,
+                      meeting_url=data.meeting_url)
     db.add(meeting)
     db.flush()
     for e in employees:
@@ -177,6 +180,7 @@ _MULTIPART_SCHEMA = {
         "agenda": {"type": "string"},
         "participant_ids": {"type": "array", "items": {"type": "string", "format": "uuid"}},
         "secretary_id": {"type": "string", "format": "uuid"},
+        "meeting_url": {"type": "string", "format": "uri"},
     },
 }
 
@@ -205,7 +209,7 @@ async def create_meeting(request: Request, background: BackgroundTasks,
         upload = form.get("file")
         if not isinstance(upload, StarletteUploadFile):
             raise validation("Поле file обязательно", ["body", "file"])
-        raw = {k: form.get(k) for k in ("title", "starts_at", "timezone", "agenda", "secretary_id")
+        raw = {k: form.get(k) for k in ("title", "starts_at", "timezone", "agenda", "secretary_id", "meeting_url")
                if form.get(k) not in (None, "")}
         raw["participant_ids"] = [v for v in form.getlist("participant_ids") + form.getlist("participant_ids[]") if v]
         data = _parse_meeting(raw)
@@ -278,8 +282,11 @@ def patch_meeting(meeting_id: str, body: MeetingPatch, current: CurrentUser = De
     if "secretary_id" in fields:
         meeting.secretary_id = _secretary(db, body.secretary_id, current).id
     if "participant_ids" in fields and body.participant_ids is not None:
-        new_ids = {e.id for e in _active_employees(db, body.participant_ids)}
         old_ids = _participant_ids(meeting)
+        # already-invited (possibly archived) participants may stay; only additions must be active
+        added = [i for i in dict.fromkeys(body.participant_ids) if i not in old_ids]
+        _active_employees(db, added)
+        new_ids = set(body.participant_ids)
         removed = old_ids - new_ids
         if removed:
             in_use = set()

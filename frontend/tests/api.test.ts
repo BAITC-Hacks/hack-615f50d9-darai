@@ -109,22 +109,37 @@ it("403 PASSWORD_CHANGE_REQUIRED централизованно включает
   vi.stubGlobal("window", target);
   vi.stubGlobal(
     "fetch",
-    vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            error: {
-              code: "PASSWORD_CHANGE_REQUIRED",
-              message: "Смените пароль",
-            },
-          }),
-          { status: 403 },
-        ),
+    vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "PASSWORD_CHANGE_REQUIRED",
+            message: "Смените пароль",
+          },
+        }),
+        { status: 403 },
       ),
+    ),
   );
   await expect(request("/employees")).rejects.toMatchObject({
     code: "PASSWORD_CHANGE_REQUIRED",
   });
   expect(required).toHaveBeenCalledOnce();
+});
+
+it("DELETE сотрудника отправляет cookie/CSRF без тела и принимает пустой 204", async () => {
+  const response = new Response(null, { status: 204 });
+  const parse = vi.spyOn(response, "json");
+  const fetch = vi.fn().mockResolvedValue(response);
+  vi.stubGlobal("fetch", fetch);
+  setCsrf("test-csrf");
+  const { api } = await import("../src/api");
+  await expect(api.deleteEmployee("employee-id")).resolves.toBeUndefined();
+  const [url, options] = fetch.mock.calls[0];
+  expect(url).toBe("/api/employees/employee-id");
+  expect(options.method).toBe("DELETE");
+  expect(options.body).toBeUndefined();
+  expect(options.credentials).toBe("include");
+  expect(options.headers.get("X-CSRF-Token")).toBe("test-csrf");
+  expect(parse).not.toHaveBeenCalled();
 });

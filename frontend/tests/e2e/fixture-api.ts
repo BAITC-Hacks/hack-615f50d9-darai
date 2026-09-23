@@ -17,6 +17,8 @@ export async function fixtureApi(
     extractionError?: boolean;
     role?: User["role"];
     uploadError?: boolean;
+    legacyEmployeeResponse?: boolean;
+    deleteDelayMs?: number;
   } = {},
 ) {
   let user: User = {
@@ -35,6 +37,7 @@ export async function fixtureApi(
     {
       ...user.employee!,
       active: true,
+      can_delete: false,
       has_account: true,
       user_id: user.id,
       voice_profile: {
@@ -50,7 +53,20 @@ export async function fixtureApi(
   let csrf = "fixture-csrf";
   const accounts: Array<AccountInfo & { fixturePassword: string }> = [];
   const state = {
+    liveChunks: [] as { sequence: number; bytes: Buffer; mime: string }[],
+    liveFailures: 0,
+    livePreviewError: false,
+    liveRevision: 0,
+    liveState: "recording",
     accounts,
+    employeeRoles: {} as Record<string, User["role"]>,
+    deleteDelayMs: options.deleteDelayMs || 0,
+    deleteError: null as {
+      status: number;
+      code: string;
+      message: string;
+    } | null,
+    identificationExcluded: [] as string[],
     failAccountOnce: false,
     qualityError: false,
     get user() {
@@ -63,6 +79,24 @@ export async function fixtureApi(
     requests: [] as { path: string; method: string; body: unknown }[],
     polls: 0,
   };
+  function canDelete(employee: Employee) {
+    const role =
+      accounts.find((a) => a.employee_id === employee.id)?.role ||
+      state.employeeRoles[employee.id] ||
+      (employee.id === adminUser.employee?.id ? adminUser.role : "employee");
+    return (
+      employee.active &&
+      employee.id !== user.employee?.id &&
+      (user.role === "admin" ||
+        (user.role === "secretary" && role === "employee"))
+    );
+  }
+  function employeeOut(employee: Employee) {
+    const { can_delete, ...fields } = employee;
+    return options.legacyEmployeeResponse
+      ? fields
+      : { ...fields, can_delete: canDelete(employee) };
+  }
   const paged = (items: unknown[], params: URLSearchParams) => ({
     items: items.slice(
       Number(params.get("offset") || 0),
@@ -181,7 +215,11 @@ export async function fixtureApi(
       if (body.login === "fixture-admin") user = adminUser;
       else {
         const account = accounts.find(
-          (a) => a.login === body.login && a.fixturePassword === body.password,
+          (a) =>
+            a.active &&
+            employees.some((e) => e.id === a.employee_id && e.active) &&
+            a.login === body.login &&
+            a.fixturePassword === body.password,
         );
         if (!account)
           return fail(401, "INVALID_CREDENTIALS", "Неверный логин или пароль");
@@ -271,19 +309,22 @@ export async function fixtureApi(
     }
     if (path === "/employees/me")
       return ok({
-        ...employees.find((e) => e.id === user.employee?.id),
+        ...employeeOut(employees.find((e) => e.id === user.employee?.id)!),
         login: user.login,
       });
     if (path === "/employees" && method === "GET")
       return ok(
         paged(
-          employees.filter(
-            (e) =>
-              !url.searchParams.get("q") ||
-              `${e.fio} ${e.position} ${e.department}`.includes(
-                url.searchParams.get("q")!,
-              ),
-          ),
+          employees
+            .filter(
+              (e) =>
+                e.active &&
+                (!url.searchParams.get("q") ||
+                  `${e.fio} ${e.position} ${e.department}`
+                    .toLowerCase()
+                    .includes(url.searchParams.get("q")!.toLowerCase())),
+            )
+            .map(employeeOut),
           url.searchParams,
         ),
       );
@@ -303,12 +344,40 @@ export async function fixtureApi(
         },
       };
       employees.push(e);
-      return ok(e, 201);
+      return ok(employeeOut(e), 201);
     }
     const employee = employees.find(
       (e) =>
         path === `/employees/${e.id}` || path === `/employees/${e.id}/voice`,
     );
+    if (method === "DELETE" && /^\/employees\/[^/]+$/.test(path)) {
+      if (state.deleteDelayMs)
+        await new Promise((resolve) =>
+          setTimeout(resolve, state.deleteDelayMs),
+        );
+      if (!employee) return fail(404, "NOT_FOUND", "Сотрудник недоступен");
+      if (state.deleteError) {
+        if (state.deleteError.status === 404) employee.active = false;
+        return fail(
+          state.deleteError.status,
+          state.deleteError.code,
+          state.deleteError.message,
+        );
+      }
+      if (employee.id === user.employee?.id)
+        return fail(409, "SELF_DELETE_FORBIDDEN", "Нельзя удалить себя");
+      if (user.role === "employee")
+        return fail(403, "FORBIDDEN", "Нет права удаления");
+      if (!employee.active) return route.fulfill({ status: 204 });
+      if (!canDelete(employee))
+        return fail(403, "FORBIDDEN", "Нет права удаления");
+      employee.active = false;
+      employee.can_delete = false;
+      const account = accounts.find((a) => a.employee_id === employee.id);
+      if (account) account.active = false;
+      state.identificationExcluded.push(employee.id);
+      return route.fulfill({ status: 204 });
+    }
     if (employee) {
       if (path.endsWith("/voice")) {
         if (method === "DELETE") {
@@ -338,7 +407,7 @@ export async function fixtureApi(
         return ok({ ...employee.voice_profile, reasons: [] }, 201);
       }
       if (method === "PATCH") Object.assign(employee, body);
-      return ok(employee);
+      return ok(employeeOut(employee));
     }
     if (path === "/meetings" && method === "POST") {
       const m: Meeting = {
@@ -396,6 +465,132 @@ export async function fixtureApi(
     if (m) {
       const suffix = path.slice(`/meetings/${m.id}`.length);
       if (!suffix) return ok(m);
+      if (suffix === "/link") {
+        m.meeting_url = body.meeting_url;
+        return ok({ meeting_url: m.meeting_url });
+      }
+      if (suffix === "/live" && method === "POST") {
+        state.liveChunks = [];
+        state.liveState = "recording";
+        state.liveRevision = 0;
+        return ok(
+          {
+            session_id: id(90),
+            state: "recording",
+            next_sequence: 0,
+            poll_after_ms: 2000,
+            max_chunk_bytes: 8,
+          },
+          201,
+        );
+      }
+      if (suffix.startsWith("/live/")) {
+        if (suffix.endsWith("/cancel")) {
+          state.liveState = "cancelled";
+          return route.fulfill({ status: 204 });
+        }
+        if (suffix.includes("/chunks/")) {
+          if (state.liveFailures > 0) {
+            state.liveFailures--;
+            return fail(500, "TEST_RETRY", "Тест: временный сбой отправки");
+          }
+          const sequence = Number(suffix.split("/").pop()),
+            bytes = req.postDataBuffer()!;
+          if (sequence !== state.liveChunks.length)
+            return route.fulfill({
+              status: 409,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: {
+                  code: "CHUNK_OUT_OF_ORDER",
+                  message: "Нарушен порядок",
+                  details: { next_sequence: state.liveChunks.length },
+                },
+              }),
+            });
+          state.liveChunks.push({
+            sequence,
+            bytes,
+            mime: req.headers()["content-type"],
+          });
+          return ok({
+            accepted_sequence: sequence,
+            next_sequence: sequence + 1,
+          });
+        }
+        if (suffix.endsWith("/finish")) {
+          if (body.last_sequence !== state.liveChunks.length - 1)
+            return fail(409, "CHUNKS_MISSING", "Не все части получены");
+          state.liveState = "finalizing";
+          state.liveRevision = 0;
+          m.recording = {
+            id: id(80),
+            meeting_id: m.id,
+            processing_status: "processing",
+            stage: "transcribing",
+            error_code: null,
+            error_message: null,
+            generation: 1,
+            original_filename: "live.webm",
+            duration_seconds: 4,
+            languages: [],
+            extraction: {
+              status: "not_started",
+              error_code: null,
+              error_message: null,
+            },
+            audio_url: null,
+            created_at: "2026-09-23T10:00:00Z",
+            updated_at: "2026-09-23T10:00:00Z",
+          };
+          return ok(
+            { session_id: id(90), state: "finalizing", recording_id: id(80) },
+            202,
+          );
+        }
+        state.liveRevision++;
+        if (state.liveState === "finalizing" && state.liveRevision > 1) {
+          state.liveState = "done";
+          complete(m);
+        }
+        return ok({
+          session_id: id(90),
+          state: state.liveState,
+          next_sequence: state.liveChunks.length,
+          received_bytes: state.liveChunks.reduce(
+            (n, c) => n + c.bytes.length,
+            0,
+          ),
+          processed_until_seconds: state.liveRevision,
+          revision: state.liveRevision,
+          preview_status: state.livePreviewError ? "unavailable" : "ready",
+          preview_error: state.livePreviewError
+            ? {
+                code: "PREVIEW_ERROR",
+                message: "Тест: предварительное распознавание недоступно",
+              }
+            : null,
+          utterances: state.livePreviewError
+            ? []
+            : [
+                {
+                  id: "preview-0",
+                  start: 0,
+                  end: 2,
+                  speaker_label: null,
+                  text:
+                    state.liveRevision === 1
+                      ? "Алғашқы мәтін"
+                      : "Жаңартылған мәтін",
+                  is_final: false,
+                },
+              ],
+          draft_tasks: [],
+          recording_id: m.recording?.id || null,
+          error: null,
+        });
+      }
+
       if (suffix === "/recordings" && method === "POST") {
         if (options.uploadError)
           return fail(

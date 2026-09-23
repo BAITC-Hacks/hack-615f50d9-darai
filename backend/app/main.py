@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
 
-from . import ai_gateway
+from . import ai_gateway, live_routes, live_service
 from .auth import bootstrap_admin
 from .config import get_settings
 from .db import db_session, get_engine
@@ -42,6 +42,9 @@ def run_migrations() -> None:
 def _reminder_tick() -> int:
     settings = get_settings()
     with db_session() as db:
+        expired = live_service.expire_idle(db)
+        if expired:
+            log.warning("live sessions timed out: %d", expired)
         return run_reminders(db, datetime.now(timezone.utc), settings.reminder_lead_hours)
 
 
@@ -71,7 +74,7 @@ def startup() -> None:
     with db_session() as db:
         if bootstrap_admin(db):
             log.info("bootstrap admin created")
-        interrupted = recover_interrupted(db)
+        interrupted = recover_interrupted(db) + live_service.recover_interrupted(db)
         if interrupted:
             log.warning("recordings marked INTERRUPTED after restart: %d", interrupted)
 
@@ -108,7 +111,7 @@ def create_app() -> FastAPI:
         return response
 
     for r in (system.router, auth_users.router, auth_users.users, employees.router, meetings.router,
-              tasks.router, notifications.router):
+              tasks.router, notifications.router, live_routes.router):
         app.include_router(r)
     return app
 
