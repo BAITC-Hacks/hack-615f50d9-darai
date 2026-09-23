@@ -943,3 +943,34 @@ td small {
 .live-utterances li { padding: 12px; margin-bottom: 8px; border-left: 3px solid #377c69; background: #f3f8f6; border-radius: 4px; }
 .live-utterances li.preview-changing { border-left-style: dashed; background: #fff9eb; }
 .live-utterances p { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.meeting-date-input { position: relative; }
+.meeting-date-input input { padding-right: 52px; }
+.meeting-date-input input::-webkit-calendar-picker-indicator { display: none; }
+.calendar-trigger { position: absolute; right: 7px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 36px; height: 36px; padding: 0; color: #287564; background: #edf5f1; border: 0; border-radius: 8px; }
+.meeting-calendar { position: fixed; margin: 0; padding: 22px; width: min(364px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; border: 1px solid #dce6e1; border-radius: 18px; color: #233b36; background: #fff; box-shadow: 0 18px 60px #163c3326, 0 2px 8px #163c3310; }
+.meeting-calendar::backdrop { background: #193a3015; }
+.calendar-heading, .calendar-month, .calendar-time, .calendar-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.calendar-heading small { display: block; font-size: 10px; font-weight: 700; letter-spacing: .12em; color: #758b80; }
+.calendar-heading h3 { margin: 4px 0 0; font-size: 16px; }
+.meeting-calendar .calendar-icon-button { padding: 0; width: 32px; height: 32px; background: transparent; color: #647e73; border: 0; border-radius: 8px; font-size: 25px; font-weight: 400; }
+.meeting-calendar .calendar-icon-button:hover { background: #eff5f1; color: #156c59; }
+.calendar-month { margin: 22px 0 12px; }
+.calendar-month strong { text-transform: capitalize; font-size: 15px; }
+.calendar-month > div { display: flex; gap: 4px; }
+.calendar-weekdays, .calendar-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+.calendar-weekdays { color: #8a9a92; font-size: 11px; font-weight: 600; margin-bottom: 8px; }
+.meeting-calendar .calendar-days button { display: grid; place-items: center; padding: 0; min-height: 36px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: #30483e; font-size: 13px; font-weight: 500; }
+.meeting-calendar .calendar-days button:hover { background: #edf5f0; }
+.meeting-calendar .calendar-days .outside-month { color: #afbcb5; }
+.meeting-calendar .calendar-days .is-today { border-color: #76a892; }
+.meeting-calendar .calendar-days button[aria-pressed="true"] { background: #176e5b; color: white; border-color: #176e5b; box-shadow: 0 3px 8px #176e5b26; }
+.meeting-calendar button:focus-visible, .meeting-calendar select:focus-visible { outline: 2px solid #36866b; outline-offset: 2px; }
+.calendar-time { border-top: 1px solid #edf0ed; padding-top: 18px; margin-top: 18px; }
+.calendar-time strong { font-size: 12px; }
+.calendar-time small { display: block; font-size: 10px; color: #84958a; }
+.calendar-clock { display: flex; align-items: center; gap: 5px; }
+.calendar-clock select { width: 64px; padding: 8px; background: #f4f7f5; border-color: #e1e9e3; font-variant-numeric: tabular-nums; border-radius: 8px; }
+.calendar-footer { margin-top: 20px; }
+.calendar-footer button { font-size: 12px; padding: 10px 16px; border-radius: 9px; }
+.calendar-footer .calendar-today { background: transparent; color: #267760; padding-left: 0; }

@@ -82,19 +82,23 @@ class LiveConfig:
         # voiced audio without words is re-decoded on its own (own language in auto mode)
         self.hole_min = _env_float("LIVE_PREVIEW_HOLE_MIN_SECONDS", 0.8)
         self.max_holes = int(_env_float("LIVE_PREVIEW_MAX_HOLES_PER_WINDOW", 2))
+        # decode only from (committed - margin) once the meeting is long; 0 = always decode everything
+        self.tail_margin = _env_float("LIVE_PREVIEW_TAIL_DECODE_MARGIN_SECONDS", 30.0)
         self.busy_retry_ms = int(_env_float("LIVE_PREVIEW_BUSY_RETRY_MS", 1000))
 
 
 # ------------------------------------------------------------------ decoding
 
 
-def decode_snapshot(src: Path, dst: Path, timeout: int) -> np.ndarray:
-    """Decode everything decodable in a (possibly truncated) container prefix."""
+def decode_snapshot(src: Path, dst: Path, timeout: int, seek: float = 0.0) -> np.ndarray:
+    """Decode everything decodable in a (possibly truncated) container prefix, from ``seek``
+    seconds on (input seeking: the audio before it is not decoded; ~1 Opus frame accuracy)."""
     tmp = dst.with_suffix(".part.wav")
+    ss = ["-ss", f"{seek:.3f}"] if seek > 0 else []
     try:
         subprocess.run(
             ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-             "-err_detect", "ignore_err", "-i", str(src),
+             "-err_detect", "ignore_err", *ss, "-i", str(src),
              "-vn", "-ac", "1", "-ar", str(audio.SAMPLE_RATE), "-c:a", "pcm_s16le", "-f", "wav", str(tmp)],
             capture_output=True, timeout=timeout, check=False,
         )
@@ -450,8 +454,21 @@ def _run(req: LivePreviewRequest, cfg: LiveConfig, cur: dict, keep, registry) ->
     work = Path(req.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     src = _stable_source(req, work)
-    samples = decode_snapshot(src, work / PREVIEW_WAV, timeout=min(120, s.ffmpeg_timeout_seconds))
-    total = samples.size / audio.SAMPLE_RATE
+    sr = audio.SAMPLE_RATE
+    timeout = min(120, s.ffmpeg_timeout_seconds)
+    # Long meetings: decode only the tail (the full prefix of a 1 h recording costs ~3-4 s per call).
+    base = 0.0
+    committed0 = cur["state"].committed_until
+    if cfg.tail_margin > 0 and committed0 > cfg.tail_margin + 30.0:
+        base = float(int(committed0 - cfg.tail_margin))
+    samples = decode_snapshot(src, work / PREVIEW_WAV, timeout=timeout, seek=base)
+    if base and samples.size == 0:
+        base = 0.0   # not seekable / shorter than expected: decode the whole prefix
+        samples = decode_snapshot(src, work / PREVIEW_WAV, timeout=timeout)
+    total = base + samples.size / sr
+
+    def cut(a: float, b: float) -> np.ndarray:
+        return samples[max(0, int((a - base) * sr)):max(0, int((b - base) * sr))]
     if total + 1.0 < cur["decoded"]:
         # not a prefix of the same container (e.g. a single chunk passed as a file)
         return keep("unavailable", {"code": "AUDIO_INVALID",
@@ -479,8 +496,8 @@ def _run(req: LivePreviewRequest, cfg: LiveConfig, cur: dict, keep, registry) ->
         state = cur["state"]
         # The previous window already kept `overlap` (backlog) / `guard` (live edge) uncommitted
         # before its end; the next one starts only `context` before the committed point, in a pause.
-        start = 0.0 if state.committed_until <= 0 else quiet_point(samples, state.committed_until - cfg.context,
-                                                                   radius=min(0.75, cfg.context + 0.25))
+        start = 0.0 if state.committed_until <= 0 else base + quiet_point(
+            samples, state.committed_until - cfg.context - base, radius=min(0.75, cfg.context + 0.25))
         start = min(start, state.committed_until)  # never skip uncommitted audio
         end = min(total, start + cfg.window)
         if total - end < cfg.min_new and total - start <= 29.5:
@@ -488,7 +505,7 @@ def _run(req: LivePreviewRequest, cfg: LiveConfig, cur: dict, keep, registry) ->
         if end - start < 0.5:
             break
         live_edge = end >= total
-        clip = samples[int(start * audio.SAMPLE_RATE):int(end * audio.SAMPLE_RATE)]
+        clip = cut(start, end)
         check()
         t0 = time.perf_counter()
         vad = env_bool("ASR_VAD_FILTER", True)
@@ -514,7 +531,7 @@ def _run(req: LivePreviewRequest, cfg: LiveConfig, cur: dict, keep, registry) ->
         for a, b in find_holes(words, voiced, max(start, state.committed_until), hi, cfg.hole_min)[:cfg.max_holes]:
             check()
             a0, b0 = max(0.0, a - 0.2), min(total, b + 0.2)
-            sub = samples[int(a0 * audio.SAMPLE_RATE):int(b0 * audio.SAMPLE_RATE)]
+            sub = cut(a0, b0)
             henc = WindowEncoder(model, sub, vad=False, allowed=allowed, detect=language is None and not cfg.refine)
             try:
                 hres = transcribe(model, sub, language=language or henc.language, profile=profile,

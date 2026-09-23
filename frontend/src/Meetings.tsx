@@ -1,3 +1,4 @@
+import { MeetingDateTime } from "./MeetingDateTime";
 import { MeetingLiveRecorder } from "./MeetingLiveRecorder";
 import { liveApi } from "./live-api";
 import {
@@ -265,19 +266,11 @@ export function NewMeeting() {
                 placeholder="Например, еженедельная планёрка"
               />
             </Field>
-            <Field
-              label="Дата и время"
-              hint="В выбранном часовом поясе встречи."
-            >
-              <input
-                type="datetime-local"
-                required
-                value={form.starts_at}
-                onChange={(e) =>
-                  setForm({ ...form, starts_at: e.target.value })
-                }
-              />
-            </Field>
+            <MeetingDateTime
+              value={form.starts_at}
+              timezone={form.timezone}
+              onChange={(starts_at) => setForm({ ...form, starts_at })}
+            />
             <Field label="Часовой пояс (IANA)">
               <input
                 required
